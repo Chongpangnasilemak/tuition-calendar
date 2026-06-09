@@ -8,6 +8,7 @@ import { clear } from "./util.js";
 import { WeekView } from "./views/week-view.js";
 import { RequestsView } from "./views/requests-view.js";
 import { ManageView } from "./views/manage-view.js";
+import { DashboardView } from "./views/dashboard-view.js";
 
 export class Router {
   constructor(mount, provider) {
@@ -43,6 +44,8 @@ export class Router {
       view = new RequestsView(this.mount, this.provider, this.viewer);
     } else if (path.startsWith("/manage") && this.viewer.role === "tutor") {
       view = new ManageView(this.mount, this.provider, this.viewer);
+    } else if (path.startsWith("/dashboard") && this.viewer.role === "tutor") {
+      view = new DashboardView(this.mount, this.provider, this.viewer);
     } else {
       view = new WeekView(this.mount, this.provider, this.viewer);
     }

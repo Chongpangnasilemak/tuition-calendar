@@ -85,7 +85,10 @@ function renderShell(provider, router, viewer) {
     navLink("#/week", "Calendar"),
     navLink("#/requests", viewer.role === "tutor" ? "Requests" : "My requests"),
   ];
-  if (viewer.role === "tutor") navItems.push(navLink("#/manage", "Manage"));
+  if (viewer.role === "tutor") {
+    navItems.push(navLink("#/dashboard", "Dashboard"));
+    navItems.push(navLink("#/manage", "Manage"));
+  }
   const nav = el("nav", { class: "topbar__nav" }, navItems);
 
   const rightItems = [

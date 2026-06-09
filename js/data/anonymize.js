@@ -20,6 +20,9 @@ export function projectLessonForViewer(lesson, viewer) {
   const mine = isTutor || viewer.studentIds.includes(lesson.studentId);
 
   if (mine) {
+    // Notes: the tutor always sees them; a parent sees them only if the tutor
+    // shared them (shareNotes). So a parent never sees private prep notes.
+    const notesVisible = isTutor || lesson.shareNotes === true;
     return {
       id: lesson.id,
       startISO: lesson.startISO,
@@ -29,7 +32,9 @@ export function projectLessonForViewer(lesson, viewer) {
       studentId: lesson.studentId,
       studentName: lesson.studentName,
       subject: lesson.subject,
-      notes: lesson.notes,
+      notes: notesVisible ? lesson.notes : "",
+      // tutor also needs to know the share state (to render the toggle checked)
+      ...(isTutor ? { shareNotes: lesson.shareNotes === true } : {}),
       // seriesId is surfaced ONLY on detail views (drives the edit/cancel
       // "this / following / all" chooser). It is NEVER added to the anonymous
       // branch below, so a parent can't tell which busy-blocks recur together.

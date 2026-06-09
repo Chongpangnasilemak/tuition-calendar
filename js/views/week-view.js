@@ -27,6 +27,7 @@ import {
 } from "../util.js";
 import { modal, toast } from "./components.js";
 import { describeRecurrence } from "../data/recurrence.js";
+import { downloadICS, googleCalendarUrl } from "../ics.js";
 
 // Grid bounds (local hours) and pixel scale.
 const DAY_START_H = 8; // 08:00
@@ -90,6 +91,7 @@ export class WeekView {
         el("div", { class: "legend" }, [
           el("span", { class: "legend__item" }, [el("span", { class: "swatch swatch--mine" }), "Your child"]),
           el("span", { class: "legend__item" }, [el("span", { class: "swatch swatch--busy" }), "Busy — name hidden"]),
+          el("span", { class: "legend__item" }, [el("span", { class: "swatch swatch--open" }), "Available — tap to book"]),
         ])
       );
     }
@@ -104,9 +106,14 @@ export class WeekView {
     clear(this.calWrap);
     this.calWrap.appendChild(el("div", { class: "cal__loading" }, "Loading schedule…"));
 
-    let data;
+    const weekEndISO = addDays(this.weekStart, 7).toISOString();
+    let data, slots = [];
     try {
       data = await this.provider.getWeekSchedule(this.weekStart.toISOString());
+      // Open bookable slots (best-effort; not fatal if it fails).
+      try {
+        slots = await this.provider.listOpenSlots(this.weekStart.toISOString(), weekEndISO);
+      } catch (_) { slots = []; }
     } catch (e) {
       clear(this.calWrap);
       this.calWrap.appendChild(el("div", { class: "error" }, `Could not load schedule: ${e.message}`));
@@ -114,10 +121,10 @@ export class WeekView {
     }
 
     clear(this.calWrap);
-    this._renderGrid(data.lessons);
+    this._renderGrid(data.lessons, slots);
   }
 
-  _renderGrid(lessons) {
+  _renderGrid(lessons, openSlots = []) {
     // --- column headers (sticky), aligned with the time-gutter on the left ---
     const headRow = el("div", { class: "cal__head" }, [
       el("div", { class: "cal__corner" }),
@@ -160,6 +167,10 @@ export class WeekView {
 
     const isTutor = this.viewer.role === "tutor";
 
+    // Group open slots by weekday.
+    const slotsByDay = Array.from({ length: 7 }, () => []);
+    for (const s of openSlots) slotsByDay[dowIndex(new Date(s.startISO))].push(s);
+
     for (let i = 0; i < 7; i++) {
       const colDate = addDays(this.weekStart, i);
       const isToday = dayKey(colDate) === todayKey;
@@ -173,16 +184,22 @@ export class WeekView {
         col.appendChild(el("div", { class: "cal__hourline", style: `top:${h * PX_PER_HOUR}px` }));
       }
 
-      // Tutor: click an empty part of the column to add a lesson at that time.
+      // Tutor: click an empty part of the column -> choose add lesson / open slot.
       if (isTutor) {
         col.addEventListener("click", (e) => {
-          if (e.target !== col) return; // ignore clicks that land on a lesson block
+          if (e.target !== col) return; // ignore clicks that land on a block
           const rect = col.getBoundingClientRect();
           const y = e.clientY - rect.top + col.scrollTop;
           const mins = Math.round((y / PX_PER_HOUR) * 60 / 30) * 30; // snap to 30 min
           const startMin = Math.max(0, Math.min(mins, TOTAL_HOURS * 60 - 60));
-          this._openAddLesson({ date: colDate, startMin });
+          this._onTutorEmptyClick(colDate, startMin);
         });
+      }
+
+      // Open bookable slots (rendered behind lessons).
+      for (const s of slotsByDay[i]) {
+        const block = this._openSlotBlock(s);
+        if (block) col.appendChild(block);
       }
 
       // Positioned lesson blocks (with overlap columns).
@@ -293,12 +310,110 @@ export class WeekView {
         this._openEditLesson(lesson);
       });
     } else if (lesson.mine) {
-      // A parent can propose a reschedule of their OWN child's lesson.
+      // A parent clicks their OWN child's lesson -> detail (add-to-calendar +
+      // shared notes + request reschedule).
       node.classList.add("ev--clickable");
-      node.title = "Click to request a reschedule";
-      node.addEventListener("click", () => this._openReschedule(lesson));
+      node.title = "Click for options";
+      node.addEventListener("click", () => this._openParentLesson(lesson));
     }
     return node;
+  }
+
+  // --------------------------------------------------------------------- //
+  // Open bookable slots
+  // --------------------------------------------------------------------- //
+  _openSlotBlock(slot) {
+    const startMin = minutesFromStart(slot.startISO);
+    const endMin = minutesFromStart(slot.endISO);
+    if (startMin == null || endMin == null || endMin <= startMin) return null;
+    const top = (startMin / 60) * PX_PER_HOUR;
+    const height = Math.max(((endMin - startMin) / 60) * PX_PER_HOUR, 22);
+    const style = `top:${top}px;height:${height}px;left:2px;width:calc(100% - 4px);`;
+    const isTutor = this.viewer.role === "tutor";
+    const node = el("div", {
+      class: "ev ev--open ev--clickable" + (height < 40 ? " ev--short" : ""),
+      style,
+      title: isTutor ? "Open slot — click to remove" : "Available — tap to book",
+    }, [
+      el("div", { class: "ev__title" }, isTutor ? "Open" : "Available"),
+      height < 40 ? null : el("div", { class: "ev__time" }, fmtTimeRange(slot.startISO, slot.endISO)),
+    ]);
+    node.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isTutor) this._removeSlot(slot);
+      else this._bookSlot(slot);
+    });
+    return node;
+  }
+
+  _onTutorEmptyClick(colDate, startMin) {
+    // Offer: add a lesson now, or open the slot for parent self-booking.
+    const addBtn = el("button", { class: "btn btn--block scope__btn", type: "button" }, "➕ Add a lesson");
+    const openBtn = el("button", { class: "btn btn--block scope__btn", type: "button" }, "🟢 Open this slot for booking");
+    const { close } = modal("This time slot", [
+      el("p", { class: "muted" }, "What would you like to do with this time?"),
+      el("div", { class: "scope" }, [addBtn, openBtn]),
+    ], []);
+    addBtn.addEventListener("click", () => { close(); this._openAddLesson({ date: colDate, startMin }); });
+    openBtn.addEventListener("click", () => { close(); this._openSlotAt(colDate, startMin); });
+  }
+
+  async _openSlotAt(colDate, startMin) {
+    const absMin = DAY_START_H * 60 + startMin;
+    const startISO = atDayMin(colDate, absMin);
+    const form = this._timeForm({ defaultDateISO: startISO, defaultStart: startISO, defaultEnd: new Date(new Date(startISO).getTime() + 60 * 60000).toISOString() });
+    const submit = el("button", { class: "btn btn--primary", type: "button" }, "Open slot");
+    const { close } = modal("Open a bookable slot", [
+      el("p", { class: "muted" }, "Parents will see this as “Available” and can book it instantly for their child."),
+      form.node,
+    ], [submit]);
+    submit.addEventListener("click", async () => {
+      const vals = form.values();
+      if (!vals) return;
+      submit.disabled = true;
+      try {
+        await this.provider.openSlot({ startISO: vals.startISO, endISO: vals.endISO });
+        close();
+        toast("Slot opened for booking.", "success");
+        this._loadWeek();
+      } catch (e) { submit.disabled = false; toast(e.message, "error"); }
+    });
+  }
+
+  async _removeSlot(slot) {
+    if (!confirm(`Remove this open slot (${fmtTimeRange(slot.startISO, slot.endISO)})?`)) return;
+    try {
+      await this.provider.removeOpenSlot(slot.id);
+      toast("Slot removed.", "success");
+      this._loadWeek();
+    } catch (e) { toast(e.message, "error"); }
+  }
+
+  async _bookSlot(slot) {
+    let students = [];
+    try { students = await this.provider.listMyStudents(); } catch (e) { toast(e.message, "error"); return; }
+    if (!students.length) { toast("No child is linked to your account yet.", "error"); return; }
+    const select = el("select", { class: "field__input" }, students.map((s) => el("option", { value: s.id }, s.name)));
+    const subject = el("input", { class: "field__input", type: "text", placeholder: "Subject (optional)" });
+    const submit = el("button", { class: "btn btn--primary", type: "button" }, "Book this slot");
+    const childField = students.length > 1
+      ? el("label", { class: "field" }, [el("span", { class: "field__label" }, "Child"), select]) : null;
+    const { close } = modal("Book this lesson", [
+      el("div", { class: "ldetail__time" }, fmtTimeRange(slot.startISO, slot.endISO)),
+      el("p", { class: "muted" }, "This time is available. Booking confirms it instantly."),
+      childField,
+      el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
+    ].filter(Boolean), [submit]);
+    submit.addEventListener("click", async () => {
+      const studentId = students.length > 1 ? select.value : students[0].id;
+      submit.disabled = true;
+      try {
+        await this.provider.bookOpenSlot(slot.id, studentId, subject.value.trim());
+        close();
+        toast("Lesson booked! 🎉", "success");
+        this._loadWeek();
+      } catch (e) { submit.disabled = false; toast(e.message, "error"); }
+    });
   }
 
   _shift(days) {
@@ -314,6 +429,68 @@ export class WeekView {
   _refreshRange() {
     const rangeEl = this.mount.querySelector(".week__range");
     if (rangeEl) rangeEl.textContent = weekRangeLabel(this.weekStart.toISOString());
+  }
+
+  // --------------------------------------------------------------------- //
+  // Add-to-calendar (shared by tutor edit + parent detail)
+  // --------------------------------------------------------------------- //
+  /** Build an .ics event object from a lesson the viewer can see in detail. */
+  _calendarEvent(lesson) {
+    const title = `${lesson.subject || "Lesson"}${lesson.mine === false && this.viewer.role === "tutor" ? " · " + lesson.studentName : ""}`;
+    const descParts = [];
+    if (lesson.studentName) descParts.push("Student: " + lesson.studentName);
+    if (lesson.notes) descParts.push(lesson.notes);
+    return {
+      id: lesson.id,
+      startISO: lesson.startISO,
+      endISO: lesson.endISO,
+      title: this.viewer.role === "tutor" ? `${lesson.studentName} · ${lesson.subject || "Lesson"}` : `${lesson.subject || "Tuition"}`,
+      description: descParts.join("\n"),
+    };
+  }
+
+  /** Two buttons: download .ics + open Google Calendar. */
+  _calendarRow(lesson) {
+    const ev = this._calendarEvent(lesson);
+    const dl = el("button", { class: "btn btn--ghost btn--sm", type: "button" }, "⬇ .ics file");
+    dl.addEventListener("click", () => {
+      downloadICS(ev, `${(lesson.subject || "lesson").replace(/\W+/g, "-").toLowerCase()}.ics`);
+      toast("Calendar file downloaded.", "success");
+    });
+    const gc = el("a", {
+      class: "btn btn--ghost btn--sm",
+      href: googleCalendarUrl(ev),
+      target: "_blank",
+      rel: "noopener",
+    }, "📅 Google Calendar");
+    return el("div", { class: "calrow" }, [
+      el("span", { class: "field__label" }, "Add to calendar"),
+      el("div", { class: "calrow__btns" }, [dl, gc]),
+    ]);
+  }
+
+  // --------------------------------------------------------------------- //
+  // Parent: lesson detail (add-to-calendar, shared notes, reschedule)
+  // --------------------------------------------------------------------- //
+  _openParentLesson(lesson) {
+    const body = [
+      el("div", { class: "ldetail" }, [
+        el("div", { class: "ldetail__time" }, fmtTimeRange(lesson.startISO, lesson.endISO)),
+        el("div", { class: "ldetail__sub" }, [el("strong", {}, lesson.studentName), lesson.subject ? ` · ${lesson.subject}` : ""]),
+      ]),
+    ];
+    // Shared notes (only present if the tutor shared them — see provider).
+    if (lesson.notes) {
+      body.push(el("div", { class: "ldetail__notes" }, [
+        el("span", { class: "field__label" }, "Note from tutor"),
+        el("p", {}, lesson.notes),
+      ]));
+    }
+    body.push(this._calendarRow(lesson));
+
+    const reschedule = el("button", { class: "btn btn--primary", type: "button" }, "Request reschedule");
+    const { close } = modal(`${lesson.subject || "Lesson"}`, body, [reschedule]);
+    reschedule.addEventListener("click", () => { close(); this._openReschedule(lesson); });
   }
 
   // --------------------------------------------------------------------- //
@@ -450,6 +627,7 @@ export class WeekView {
     const endISO = new Date(new Date(startISO).getTime() + 60 * 60000).toISOString();
 
     const form = this._timeForm({ defaultDateISO: startISO, defaultStart: startISO, defaultEnd: endISO });
+    const shareCb = this._shareNotesCheckbox(false);
     const repeat = this._recurrenceControls(form);
     const submit = el("button", { class: "btn btn--primary", type: "button" }, "Add lesson");
 
@@ -459,6 +637,7 @@ export class WeekView {
         el("label", { class: "field" }, [el("span", { class: "field__label" }, "Student"), select]),
         el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
         form.node,
+        shareCb.node,
         repeat.node,
       ],
       [submit]
@@ -477,6 +656,7 @@ export class WeekView {
           endISO: vals.endISO,
           subject: subject.value.trim(),
           notes: vals.note,
+          shareNotes: shareCb.checked(),
           recurrence: rec,
         });
         close();
@@ -487,6 +667,16 @@ export class WeekView {
         toast(e.message, "error");
       }
     });
+  }
+
+  /** A "Share note with parent" checkbox. Returns { node, checked() }. */
+  _shareNotesCheckbox(initial) {
+    const cb = el("input", { type: "checkbox", ...(initial ? { checked: true } : {}) });
+    const node = el("label", { class: "checkrow" }, [
+      cb,
+      el("span", {}, "Share the note with the parent"),
+    ]);
+    return { node, checked: () => cb.checked };
   }
 
   /**
@@ -582,7 +772,10 @@ export class WeekView {
       defaultDateISO: lesson.startISO,
       defaultStart: lesson.startISO,
       defaultEnd: lesson.endISO,
+      defaultNote: lesson.notes || "",
+      noteLabel: "Lesson note (private unless shared below)",
     });
+    const shareCb = this._shareNotesCheckbox(lesson.shareNotes === true);
 
     const isSeries = !!lesson.seriesId;
     const save = el("button", { class: "btn btn--primary", type: "button" }, "Save changes");
@@ -592,10 +785,12 @@ export class WeekView {
       el("label", { class: "field" }, [el("span", { class: "field__label" }, "Student"), select]),
       el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
       form.node,
+      shareCb.node,
     ];
     if (isSeries) {
       bodyNodes.push(el("p", { class: "muted recur__note" }, "🔁 Part of a repeating series — you'll choose which lessons to change."));
     }
+    bodyNodes.push(this._calendarRow(lesson));
 
     const { close } = modal(`Edit lesson — ${lesson.studentName}`, bodyNodes, [cancelLesson, save]);
 
@@ -608,6 +803,7 @@ export class WeekView {
       if (vals.endISO !== lesson.endISO) p.endISO = vals.endISO;
       if (subject.value.trim() !== (lesson.subject || "")) p.subject = subject.value.trim();
       if ((vals.note || "") !== (lesson.notes || "")) p.notes = vals.note;
+      if (shareCb.checked() !== (lesson.shareNotes === true)) p.shareNotes = shareCb.checked();
       return p;
     };
 
@@ -691,7 +887,7 @@ export class WeekView {
   }
 
   /** Builds the shared date/start/end/note sub-form. */
-  _timeForm({ defaultDateISO, defaultStart, defaultEnd }) {
+  _timeForm({ defaultDateISO, defaultStart, defaultEnd, defaultNote, noteLabel }) {
     const dateVal = toDateInputValue(new Date(defaultDateISO));
     const startVal = defaultStart ? hhmm(defaultStart) : "16:00";
     const endVal = defaultEnd ? hhmm(defaultEnd) : "17:00";
@@ -699,7 +895,7 @@ export class WeekView {
     const date = el("input", { class: "field__input", type: "date", value: dateVal });
     const start = el("input", { class: "field__input", type: "time", value: startVal });
     const end = el("input", { class: "field__input", type: "time", value: endVal });
-    const note = el("textarea", { class: "field__input", rows: "2", placeholder: "Optional note to the tutor…" });
+    const note = el("textarea", { class: "field__input", rows: "2", placeholder: noteLabel || "Optional note to the tutor…" }, defaultNote || "");
 
     const node = el("div", { class: "form" }, [
       el("label", { class: "field" }, [el("span", { class: "field__label" }, "Date"), date]),

@@ -42,6 +42,7 @@ import {
   updateDoc,
   deleteDoc,
   writeBatch,
+  runTransaction,
   Timestamp,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
@@ -255,6 +256,10 @@ export class FirebaseProvider extends DataProvider {
   }
 
   _lessonFull(id, data, mine) {
+    // `mine` is true only for a PARENT's own child (tutor all-view passes false).
+    // The tutor always sees notes; a parent sees notes only if shared.
+    const isParentView = mine;
+    const notesVisible = !isParentView || data.shareNotes === true;
     return {
       id,
       startISO: tsToISO(data.start),
@@ -264,9 +269,9 @@ export class FirebaseProvider extends DataProvider {
       studentId: data.studentId,
       studentName: data.studentName,
       subject: data.subject,
-      notes: data.notes,
-      // seriesId only on the detail object (drives the edit/cancel chooser);
-      // bookings never carry it, so anonymous parent blocks can't reveal a series.
+      notes: notesVisible ? (data.notes || "") : "",
+      // tutor view: surface the share state so the toggle renders checked
+      ...(!isParentView ? { shareNotes: data.shareNotes === true, paid: data.paid === true } : {}),
       ...(data.seriesId ? { seriesId: data.seriesId } : {}),
       _status: data.status || "booked",
     };
@@ -393,7 +398,7 @@ export class FirebaseProvider extends DataProvider {
   }
 
   // ---- tutor: lesson management ----
-  async addLesson({ studentId, startISO, endISO, subject, notes, recurrence }) {
+  async addLesson({ studentId, startISO, endISO, subject, notes, recurrence, shareNotes }) {
     const v = this._requireTutor();
     const db = this._db;
     const s = await getDoc(doc(db, "students", studentId));
@@ -404,6 +409,7 @@ export class FirebaseProvider extends DataProvider {
     const studentName = s.data().name;
     const subj = (subject || "Lesson").trim();
     const note = (notes || "").trim();
+    const share = shareNotes === true;
     const occ = expandRecurrence(startISO, endISO, recurrence || null);
     const seriesId = occ.length > 1 ? "ser-" + doc(collection(db, "lessons")).id : null;
 
@@ -428,6 +434,8 @@ export class FirebaseProvider extends DataProvider {
         studentName,
         subject: subj,
         notes: note,
+        shareNotes: share,
+        paid: false,
         start, end,
         status: "booked",
         ...(seriesId ? { seriesId } : {}),
@@ -467,6 +475,8 @@ export class FirebaseProvider extends DataProvider {
     }
     if (patch.subject != null) lessonPatch.subject = patch.subject.trim();
     if (patch.notes != null) lessonPatch.notes = patch.notes.trim();
+    if (patch.shareNotes != null) lessonPatch.shareNotes = patch.shareNotes === true;
+    if (patch.paid != null) lessonPatch.paid = patch.paid === true; // lessons-only flag
 
     const batch = writeBatch(db);
     if (Object.keys(lessonPatch).length) batch.update(lessonRef, lessonPatch);
@@ -540,6 +550,7 @@ export class FirebaseProvider extends DataProvider {
       }
       if (patch.subject != null) lessonPatch.subject = patch.subject.trim();
       if (patch.notes != null) lessonPatch.notes = patch.notes.trim();
+      if (patch.shareNotes != null) lessonPatch.shareNotes = patch.shareNotes === true;
       if (Object.keys(lessonPatch).length) batch.update(doc(db, "lessons", d.id), lessonPatch);
       if (Object.keys(bookingPatch).length) batch.update(doc(db, "bookings", d.id), bookingPatch);
     }
@@ -576,6 +587,105 @@ export class FirebaseProvider extends DataProvider {
     this._requireTutor();
     const snap = await getDocs(collection(this._db, "students"));
     return snap.docs.map((d) => ({ id: d.id, name: d.data().name }));
+  }
+
+  async listLessonsInRange(startISO, endISO) {
+    this._requireTutor();
+    const db = this._db;
+    const snap = await getDocs(query(
+      collection(db, "lessons"),
+      where("start", ">=", Timestamp.fromDate(new Date(startISO))),
+      where("start", "<", Timestamp.fromDate(new Date(endISO)))
+    ));
+    return snap.docs
+      .map((d) => { const x = d.data(); return {
+        id: d.id, startISO: tsToISO(x.start), endISO: tsToISO(x.end),
+        studentName: x.studentName, subject: x.subject, paid: x.paid === true,
+        _status: x.status || "booked",
+      }; })
+      .filter((l) => l._status === "booked")
+      .sort((a, b) => a.startISO.localeCompare(b.startISO));
+  }
+
+  async setLessonPaid(id, paid) {
+    this._requireTutor();
+    await updateDoc(doc(this._db, "lessons", id), { paid: paid === true });
+  }
+
+  // ---- self-booking ----
+  async listOpenSlots(startISO, endISO) {
+    this._requireViewer();
+    const db = this._db;
+    const snap = await getDocs(query(
+      collection(db, "openslots"),
+      where("start", ">=", Timestamp.fromDate(new Date(startISO))),
+      where("start", "<", Timestamp.fromDate(new Date(endISO)))
+    ));
+    return snap.docs
+      .filter((d) => (d.data().status || "open") === "open")
+      .map((d) => ({ id: d.id, startISO: tsToISO(d.data().start), endISO: tsToISO(d.data().end) }))
+      .sort((a, b) => a.startISO.localeCompare(b.startISO));
+  }
+
+  async openSlot({ startISO, endISO }) {
+    this._requireTutor();
+    if (!startISO || !endISO || endISO <= startISO) throw new Error("Invalid slot time range.");
+    const ref = doc(collection(this._db, "openslots"));
+    await setDoc(ref, {
+      start: Timestamp.fromDate(new Date(startISO)),
+      end: Timestamp.fromDate(new Date(endISO)),
+      status: "open",
+      createdAt: serverTimestamp(),
+    });
+    return { id: ref.id, startISO, endISO };
+  }
+
+  async removeOpenSlot(slotId) {
+    this._requireTutor();
+    await deleteDoc(doc(this._db, "openslots", slotId));
+  }
+
+  async bookOpenSlot(slotId, studentId, subject) {
+    const v = this._requireViewer();
+    if (v.role !== "parent") throw new Error("Only parents can book a slot.");
+    if (!v.studentIds.includes(studentId)) throw new Error("You can only book for your own child.");
+    const db = this._db;
+
+    // Need the student's name (read outside the txn; immutable enough for demo scale).
+    const sDoc = await getDoc(doc(db, "students", studentId));
+    const studentName = sDoc.exists() ? sDoc.data().name : studentId;
+    const newId = doc(collection(db, "bookings")).id; // shared id for booking+lesson
+
+    // Transaction: claim the slot iff still open, then create booking+lesson.
+    // A racing second booker sees status!='open' and throws -> no double-book.
+    let slotStartISO, slotEndISO;
+    await runTransaction(db, async (tx) => {
+      const slotRef = doc(db, "openslots", slotId);
+      const slotSnap = await tx.get(slotRef);
+      if (!slotSnap.exists() || (slotSnap.data().status || "open") !== "open") {
+        throw new Error("Sorry, that slot is no longer available.");
+      }
+      const slot = slotSnap.data();
+      slotStartISO = tsToISO(slot.start);
+      slotEndISO = tsToISO(slot.end);
+      tx.update(slotRef, { status: "taken", takenBy: v.uid, takenStudentId: studentId });
+      tx.set(doc(db, "bookings", newId), {
+        start: slot.start, end: slot.end,
+        durationMins: Math.round((slot.end.toMillis() - slot.start.toMillis()) / 60000),
+        status: "booked", kind: "lesson",
+      });
+      tx.set(doc(db, "lessons", newId), {
+        bookingId: newId, studentId, studentName,
+        subject: (subject || "Lesson").trim(), notes: "", shareNotes: false, paid: false,
+        start: slot.start, end: slot.end, status: "booked",
+      });
+    });
+
+    return {
+      id: newId, anonymous: false, mine: true, studentId, studentName,
+      subject: (subject || "Lesson").trim(), notes: "",
+      startISO: slotStartISO, endISO: slotEndISO,
+    };
   }
 
   async addStudent({ name, subject }) {

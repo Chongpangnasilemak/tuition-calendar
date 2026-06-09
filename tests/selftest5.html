@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Tuition Calendar — features self-test</title></head>
+  <body>
+    <h1>Self-test 5 (notes sharing, self-booking, dashboard)</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      import { MockProvider } from "../js/data/mock-provider.js";
+      import { buildICS, googleCalendarUrl } from "../js/ics.js";
+
+      const results = [];
+      let failed = 0;
+      const check = (n, c, d = "") => { results.push(`${c ? "PASS" : "FAIL"}  ${n}${d ? "  — " + d : ""}`); if (!c) failed++; };
+      const mondayISO = () => { const d=new Date(); const day=(d.getDay()+6)%7; d.setHours(0,0,0,0); d.setDate(d.getDate()-day); return d.toISOString(); };
+      const at = (dow,h,m=0)=>{ const d=new Date(mondayISO()); d.setDate(d.getDate()+dow); d.setHours(h,m,0,0); return d.toISOString(); };
+
+      async function run() {
+        try { localStorage.removeItem("tuition_demo_state_v1"); localStorage.removeItem("tuition_demo_last_user"); } catch(_){}
+
+        // ---- .ics generator basics ----
+        const ics = buildICS({ id:"x", startISO: at(0,15), endISO: at(0,16), title:"Maths", description:"notes" });
+        check("ics has VEVENT + DTSTART + UTC Z", /BEGIN:VEVENT/.test(ics) && /DTSTART:\d{8}T\d{6}Z/.test(ics));
+        check("ics uses CRLF line endings", ics.includes("\r\n"));
+        check("google url has dates param", /[?&]dates=\d{8}T\d{6}Z%2F\d{8}T\d{6}Z/.test(googleCalendarUrl({ startISO: at(0,15), endISO: at(0,16), title:"x" })) || googleCalendarUrl({startISO:at(0,15),endISO:at(0,16),title:"x"}).includes("dates="));
+
+        const p = new MockProvider(); await p.init();
+
+        // ---- notes sharing: tutor adds a lesson with a private note ----
+        await p.signIn("tutor@demo.app","demo");
+        const sid = "stu-aiden";
+        const NOTE_T = at(3,20); // Thu 8pm — an empty seed slot, no collision
+        const lessonT = await p.addLesson({ studentId: sid, startISO: NOTE_T, endISO: at(3,21), subject:"Maths", notes:"PRIVATE PREP", shareNotes:false });
+        // tutor sees the note
+        check("tutor sees the note", lessonT.notes === "PRIVATE PREP");
+        check("tutor sees shareNotes flag", lessonT.shareNotes === false);
+
+        // parent A (Aiden's) should NOT see the unshared note
+        await p.signIn("parent.a@demo.app","demo");
+        let sched = await p.getWeekSchedule(mondayISO());
+        let mine = sched.lessons.filter(l => !l.anonymous && new Date(l.startISO).getTime() === new Date(NOTE_T).getTime());
+        check("parent does NOT see unshared note", mine.length===1 && (mine[0].notes||"")==="", JSON.stringify(mine[0]&&mine[0].notes));
+
+        // tutor shares it
+        await p.signIn("tutor@demo.app","demo");
+        await p.updateLesson(lessonT.id, { shareNotes: true });
+        await p.signIn("parent.a@demo.app","demo");
+        sched = await p.getWeekSchedule(mondayISO());
+        mine = sched.lessons.filter(l => !l.anonymous && new Date(l.startISO).getTime() === new Date(NOTE_T).getTime());
+        check("parent DOES see shared note", mine.length===1 && mine[0].notes === "PRIVATE PREP");
+
+        // ---- self-booking ----
+        await p.signIn("tutor@demo.app","demo");
+        const slot = await p.openSlot({ startISO: at(4,17), endISO: at(4,18) });
+        check("tutor opened a slot", !!slot.id);
+        // parent sees it
+        await p.signIn("parent.a@demo.app","demo");
+        let slots = await p.listOpenSlots(mondayISO(), at(6,23));
+        check("parent sees the open slot", slots.some(s=>s.id===slot.id));
+        // parent books it
+        const booked = await p.bookOpenSlot(slot.id, sid, "English");
+        check("parent booked the slot -> a lesson", !booked.anonymous && booked.subject==="English");
+        // slot no longer open
+        slots = await p.listOpenSlots(mondayISO(), at(6,23));
+        check("slot consumed after booking", !slots.some(s=>s.id===slot.id));
+        // double-book fails
+        let dbl=false; try { await p.bookOpenSlot(slot.id, sid); } catch { dbl=true; }
+        check("double-book rejected", dbl);
+        // parent can't book for another child
+        const slot2 = await (async()=>{ await p.signIn("tutor@demo.app","demo"); const s=await p.openSlot({startISO:at(5,10),endISO:at(5,11)}); await p.signIn("parent.a@demo.app","demo"); return s; })();
+        let wrong=false; try { await p.bookOpenSlot(slot2.id, "stu-bella"); } catch { wrong=true; }
+        check("parent can't book for another child", wrong);
+        // tutor can't be booked-for by... tutor (only parents book)
+        await p.signIn("tutor@demo.app","demo");
+        let tutorBook=false; try { await p.bookOpenSlot(slot2.id, sid); } catch { tutorBook=true; }
+        check("tutor cannot bookOpenSlot", tutorBook);
+
+        // ---- dashboard: hours + paid flag ----
+        const range = await p.listLessonsInRange(mondayISO(), at(6,23));
+        check("listLessonsInRange returns lessons", range.length >= 1);
+        const target = range[0];
+        check("lessons start unpaid", target.paid === false);
+        await p.setLessonPaid(target.id, true);
+        const range2 = await p.listLessonsInRange(mondayISO(), at(6,23));
+        check("setLessonPaid toggles paid", range2.find(l=>l.id===target.id).paid === true);
+        // parent can't use dashboard methods
+        await p.signIn("parent.a@demo.app","demo");
+        let pBlocked=false; try { await p.listLessonsInRange(mondayISO(), at(6,23)); } catch { pBlocked=true; }
+        check("parent BLOCKED from listLessonsInRange", pBlocked);
+
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST5_OK" : "SELFTEST5_FAIL";
+      }
+      run().catch(e => { document.getElementById("out").textContent = "ERROR: " + e.stack; document.title = "SELFTEST5_FAIL"; });
+    </script>
+  </body>
+</html>

@@ -42,6 +42,7 @@ export class MockProvider extends DataProvider {
     this._lessons = [];
     this._requests = [];
     this._invites = [];
+    this._openSlots = []; // tutor-opened bookable slots
     this._current = null; // uid string or null
     this._authCbs = new Set();
     this._persist = true; // set false on first localStorage failure
@@ -80,6 +81,7 @@ export class MockProvider extends DataProvider {
         lessons: this._lessons,
         requests: this._requests,
         invites: this._invites,
+        openSlots: this._openSlots,
       };
       localStorage.setItem(STATE_KEY, JSON.stringify(blob));
     } catch (_) {
@@ -133,6 +135,7 @@ export class MockProvider extends DataProvider {
     this._lessons = buildLessons(now);
     this._requests = buildRequests(now);
     this._invites = [];
+    this._openSlots = [];
   }
 
   /** Adopt a loaded blob into instance state. _users MUST be set before the
@@ -143,6 +146,7 @@ export class MockProvider extends DataProvider {
     this._lessons = blob.lessons;
     this._requests = blob.requests;
     this._invites = blob.invites;
+    this._openSlots = Array.isArray(blob.openSlots) ? blob.openSlots : [];
     this._seedWeekISO = blob.seedWeekISO || null;
     this._current =
       blob.current && this._userByUid(blob.current) ? blob.current : null;
@@ -435,7 +439,7 @@ export class MockProvider extends DataProvider {
   }
 
   // ---- tutor: lesson management ----
-  async addLesson({ studentId, startISO, endISO, subject, notes, recurrence }) {
+  async addLesson({ studentId, startISO, endISO, subject, notes, recurrence, shareNotes }) {
     const v = this._requireTutor();
     const student = this._students[studentId];
     if (!student) throw new Error("Unknown student.");
@@ -456,6 +460,7 @@ export class MockProvider extends DataProvider {
         studentName: student.name,
         subject: subj,
         notes: note,
+        shareNotes: shareNotes === true,
         startISO: o.startISO,
         endISO: o.endISO,
         status: "booked",
@@ -491,6 +496,8 @@ export class MockProvider extends DataProvider {
     lesson.endISO = newEnd;
     if (patch.subject != null) lesson.subject = patch.subject.trim();
     if (patch.notes != null) lesson.notes = patch.notes.trim();
+    if (patch.shareNotes != null) lesson.shareNotes = patch.shareNotes === true;
+    if (patch.paid != null) lesson.paid = patch.paid === true; // dashboard flag
     this._save();
     return projectLessonForViewer(lesson, v);
   }
@@ -544,6 +551,7 @@ export class MockProvider extends DataProvider {
       if (l.endISO <= l.startISO) throw new Error("End must be after start.");
       if (patch.subject != null) l.subject = patch.subject.trim();
       if (patch.notes != null) l.notes = patch.notes.trim();
+      if (patch.shareNotes != null) l.shareNotes = patch.shareNotes === true;
     }
     this._save();
     return projectLessonForViewer(this._lessons.find((l) => l.id === id) || clicked, v);
@@ -566,6 +574,82 @@ export class MockProvider extends DataProvider {
   async listAllStudents() {
     this._requireTutor();
     return Object.values(this._students).map((s) => ({ id: s.id, name: s.name }));
+  }
+
+  async listLessonsInRange(startISO, endISO) {
+    this._requireTutor();
+    return this._lessons
+      .filter((l) => l.status === "booked" && l.startISO >= startISO && l.startISO < endISO)
+      .map((l) => ({
+        id: l.id, startISO: l.startISO, endISO: l.endISO,
+        studentName: l.studentName, subject: l.subject, paid: l.paid === true,
+      }))
+      .sort((a, b) => a.startISO.localeCompare(b.startISO));
+  }
+
+  async setLessonPaid(id, paid) {
+    this._requireTutor();
+    const l = this._lessons.find((x) => x.id === id);
+    if (!l) throw new Error("Lesson not found.");
+    l.paid = paid === true;
+    this._save();
+  }
+
+  // ---- self-booking ----
+  async listOpenSlots(startISO, endISO) {
+    this._requireViewer(); // any signed-in user can see open slots
+    return this._openSlots
+      .filter((s) => s.status === "open" && s.startISO >= startISO && s.startISO < endISO)
+      .map((s) => ({ id: s.id, startISO: s.startISO, endISO: s.endISO }))
+      .sort((a, b) => a.startISO.localeCompare(b.startISO));
+  }
+
+  async openSlot({ startISO, endISO }) {
+    this._requireTutor();
+    if (!startISO || !endISO || endISO <= startISO)
+      throw new Error("Invalid slot time range.");
+    const slot = { id: "slot-" + rid(), startISO, endISO, status: "open" };
+    this._openSlots.push(slot);
+    this._save();
+    return { id: slot.id, startISO, endISO };
+  }
+
+  async removeOpenSlot(slotId) {
+    this._requireTutor();
+    const i = this._openSlots.findIndex((s) => s.id === slotId);
+    if (i === -1) throw new Error("Slot not found.");
+    this._openSlots.splice(i, 1);
+    this._save();
+  }
+
+  async bookOpenSlot(slotId, studentId, subject) {
+    const v = this._requireViewer();
+    if (v.role !== "parent") throw new Error("Only parents can book a slot.");
+    if (!v.studentIds.includes(studentId))
+      throw new Error("You can only book for your own child.");
+    const slot = this._openSlots.find((s) => s.id === slotId);
+    if (!slot || slot.status !== "open")
+      throw new Error("Sorry, that slot is no longer available.");
+
+    // Consume the slot + create the lesson (atomic in this single-threaded mock).
+    slot.status = "taken";
+    const student = this._students[studentId];
+    const lesson = {
+      id: "bk-" + rid(),
+      studentId,
+      studentName: student?.name || studentId,
+      subject: (subject || "Lesson").trim(),
+      notes: "",
+      shareNotes: false,
+      startISO: slot.startISO,
+      endISO: slot.endISO,
+      status: "booked",
+      paid: false,
+    };
+    this._lessons.push(lesson);
+    this._save();
+    this._emit();
+    return projectLessonForViewer(lesson, v);
   }
 
   async addStudent({ name, subject }) {

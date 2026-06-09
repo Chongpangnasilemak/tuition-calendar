@@ -158,6 +158,38 @@ export class DataProvider {
   async listAllStudents() { throw new Error("not implemented"); }
 
   /**
+   * Tutor only. Lessons in [startISO, endISO) with detail + paid flag, for the
+   * dashboard (hours, paid/unpaid). Returns lessons sorted by start.
+   * @param {string} startISO @param {string} endISO
+   * @returns {Promise<Array<{id,startISO,endISO,studentName,subject,paid}>>}
+   */
+  async listLessonsInRange(startISO, endISO) { throw new Error("not implemented"); }
+
+  /** Tutor only. Mark a lesson paid/unpaid. @param {string} id @param {boolean} paid */
+  async setLessonPaid(id, paid) { throw new Error("not implemented"); }
+
+  // ---- self-booking: tutor opens bookable slots; parents book them instantly ----
+  /**
+   * Open slots in [startISO, endISO). Visible to everyone (no identity) so
+   * parents can see + book. @returns {Promise<Array<{id,startISO,endISO}>>}
+   */
+  async listOpenSlots(startISO, endISO) { throw new Error("not implemented"); }
+
+  /** Tutor only. Mark a bookable open slot. @param {{startISO,endISO}} */
+  async openSlot(payload) { throw new Error("not implemented"); }
+
+  /** Tutor only. Remove an open (un-booked) slot. @param {string} slotId */
+  async removeOpenSlot(slotId) { throw new Error("not implemented"); }
+
+  /**
+   * Parent only. Atomically book an open slot for their child: consumes the
+   * slot and creates a real lesson. Throws if the slot was already taken.
+   * @param {string} slotId @param {string} studentId @param {string} [subject]
+   * @returns {Promise<import('./provider.js').Lesson>}
+   */
+  async bookOpenSlot(slotId, studentId, subject) { throw new Error("not implemented"); }
+
+  /**
    * Tutor only. Add a new student to the roster.
    * @param {{name:string, subject?:string}} payload
    * @returns {Promise<StudentRef>}
