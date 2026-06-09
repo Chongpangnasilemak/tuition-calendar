@@ -1,0 +1,139 @@
+rules_version = '2';
+
+// =============================================================================
+// Private Tutor Scheduling App — Firestore Security Rules (FINAL, hardened)
+//
+// SINGLE TRUST ANCHOR
+//   - Tutor identity      == existence of /admins/{uid}  (console-created, never client-writable).
+//   - Parent->child link  == caller's own /users/{uid}.studentIds (console-provisioned,
+//                            never client-writable). This is the ONLY authority for
+//                            "is this my child". No denormalized parentUids on any content
+//                            doc is ever trusted for authz.
+//
+// PUBLIC LAYER carries NO identity and NO persistent per-student id:
+//   /bookings holds time/status only; studentId is hard-banned so the anonymous
+//   busy-blocks stay unlinkable. Detail lives in /lessons/{bookingId} (same id, 1:1),
+//   gated per-document by isParentOf(resource.data.studentId).
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function uid()        { return request.auth.uid; }
+
+    function isTutor() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/admins/$(uid()));
+    }
+
+    function userData() {
+      return get(/databases/$(database)/documents/users/$(uid())).data;
+    }
+    function userExists() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(uid()));
+    }
+
+    // SINGLE authority for the parent<->child link: caller's own /users doc.
+    // Never trusts a denormalized array on a content document.
+    function isParentOf(studentId) {
+      return userExists()
+        && userData().role == 'parent'
+        && studentId in userData().studentIds;
+    }
+
+    // ---- admins: existence == tutor. Never client-writable. ----
+    match /admins/{adminUid} {
+      allow read:  if isSignedIn() && uid() == adminUid;
+      allow write: if false;
+    }
+
+    // ---- users: console/server provisioned only. Trust anchor. ----
+    match /users/{userUid} {
+      allow read:  if isSignedIn() && (uid() == userUid || isTutor());
+      allow write: if false;
+    }
+
+    // ---- students: PRIVATE (carries name). parentUids on the doc is a query
+    //      convenience ONLY and is never used for authz. ----
+    match /students/{studentId} {
+      allow read:  if isTutor() || isParentOf(studentId);
+      allow write: if isTutor();
+    }
+
+    // ---- bookings: PUBLIC-to-authed. Time/status ONLY. NO identity, NO
+    //      studentId. The validator hard-bans every identifying/linking key so
+    //      a careless future write cannot reintroduce a correlation key. ----
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn();
+
+      allow create, update: if isTutor()
+        && !request.resource.data.keys().hasAny(
+             ['studentId', 'studentName', 'subject', 'notes',
+              'parentUid', 'parentUids', 'name']
+           );
+
+      allow delete: if isTutor();
+    }
+
+    // ---- lessons: PRIVATE detail, 1:1 with bookings by doc id.
+    //      Authority = isParentOf(resource.data.studentId). Client MUST query
+    //      with where('studentId','in', myStudentIds) (rules are not filters).
+    //      Tutor writes must reference a real student so a typo'd studentId
+    //      cannot grant the wrong parent access. ----
+    match /lessons/{lessonId} {
+      allow read: if isTutor() || isParentOf(resource.data.studentId);
+
+      allow create, update: if isTutor()
+        && exists(/databases/$(database)/documents/students/$(request.resource.data.studentId));
+
+      allow delete: if isTutor();
+    }
+
+    // ---- requests: AUTHOR-only read (no co-parent leakage of free-text note).
+    //      reschedule -> bookingId is string; additional -> no bookingId.
+    //      Ownership of the target booking is re-verified by the tutor at
+    //      approval time (lessons/{bookingId}.studentId == request.studentId). ----
+    match /requests/{requestId} {
+
+      allow read: if isTutor()
+        || (isSignedIn()
+            && resource.data.parentUid == uid()
+            && isParentOf(resource.data.studentId));
+
+      allow create: if isParentOf(request.resource.data.studentId)
+        && request.resource.data.parentUid == uid()
+        && request.resource.data.status == 'pending'
+        && request.resource.data.type in ['reschedule', 'additional']
+        && (
+             (request.resource.data.type == 'reschedule'
+                && request.resource.data.bookingId is string)
+             ||
+             (request.resource.data.type == 'additional'
+                && !('bookingId' in request.resource.data.keys()))
+           )
+        && request.resource.data.proposedStart is timestamp
+        && request.resource.data.proposedEnd  is timestamp
+        && request.resource.data.proposedStart < request.resource.data.proposedEnd
+        // no co-parent fan-out: a request may not smuggle a parentUids array.
+        && !request.resource.data.keys().hasAny(['parentUids']);
+
+      // Tutor resolves; may not rewrite who/what the request is about.
+      allow update: if isTutor()
+        && request.resource.data.parentUid == resource.data.parentUid
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.type      == resource.data.type
+        && request.resource.data.status in ['pending', 'approved', 'declined'];
+
+      // Author may withdraw own pending request; tutor may delete any.
+      allow delete: if isTutor()
+        || (isSignedIn()
+            && resource.data.parentUid == uid()
+            && resource.data.status == 'pending');
+    }
+
+    // -------------------------- Default deny ---------------------------------
+    match /{document=**} { allow read, write: if false; }
+  }
+}

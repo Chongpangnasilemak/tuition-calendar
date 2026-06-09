@@ -1,0 +1,17 @@
+# Local Firebase config with real keys (never commit real project secrets)
+js/firebase-config.local.js
+
+# OS / editor noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Node (only if tooling is added later)
+node_modules/
+npm-debug.log*
+
+# Python (only used for the local static preview server)
+__pycache__/
+*.pyc
+venv/

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tuition Calendar — self-test</title>
+  </head>
+  <body>
+    <h1>Self-test</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      // Headless smoke + security tests for the data layer. Drives the
+      // MockProvider exactly as the UI would and asserts the anonymization
+      // invariant: a parent must NEVER receive another student's name/notes.
+      import { MockProvider } from "../js/data/mock-provider.js";
+      import { projectLessonForViewer } from "../js/data/anonymize.js";
+
+      const results = [];
+      let failed = 0;
+      function check(name, cond, detail = "") {
+        results.push(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
+        if (!cond) failed++;
+      }
+
+      async function run() {
+        const p = new MockProvider();
+        await p.init();
+
+        // --- anonymize() unit: parent sees own child full, others stripped ---
+        const viewerA = { role: "parent", studentIds: ["stu-aiden"] };
+        const own = projectLessonForViewer(
+          { id: "x", startISO: "a", endISO: "b", studentId: "stu-aiden", studentName: "Aiden", subject: "Maths", notes: "secret" },
+          viewerA
+        );
+        check("own child not anonymous", own.anonymous === false);
+        check("own child name present", own.studentName === "Aiden");
+
+        const other = projectLessonForViewer(
+          { id: "y", startISO: "a", endISO: "b", studentId: "stu-bella", studentName: "Bella", subject: "Sci", notes: "secret" },
+          viewerA
+        );
+        check("other child anonymous", other.anonymous === true);
+        check("other child name ABSENT", !("studentName" in other), JSON.stringify(other));
+        check("other child notes ABSENT", !("notes" in other));
+        check("other child subject ABSENT", !("subject" in other));
+        check("other child studentId ABSENT", !("studentId" in other));
+
+        // --- provider: parent A's week schedule ---
+        await p.signIn("parent.a@demo.app", "demo");
+        const monday = mondayISO();
+        const sched = await p.getWeekSchedule(monday);
+        const foreignLeak = sched.lessons.filter(
+          (l) => l.anonymous && ("studentName" in l || "notes" in l || "subject" in l || "studentId" in l)
+        );
+        check("parent week: no foreign field leaked", foreignLeak.length === 0, `leaked=${foreignLeak.length}`);
+        const mine = sched.lessons.filter((l) => l.mine);
+        check("parent sees own child's lessons", mine.length >= 1, `mine=${mine.length}`);
+        check("parent sees others as busy", sched.lessons.some((l) => l.anonymous));
+        // Every named lesson must be the parent's own child.
+        const namedNotMine = sched.lessons.filter((l) => !l.anonymous && l.studentName !== "Aiden");
+        check("no named lesson belongs to another child", namedNotMine.length === 0,
+              namedNotMine.map((l) => l.studentName).join(","));
+
+        // --- requests: parent sees only own ---
+        const myReqs = await p.listRequests();
+        check("parent sees only own requests", myReqs.every((r) => r.parentUid === "parent-a"),
+              myReqs.map((r) => r.parentUid).join(","));
+
+        // --- parent cannot reschedule another child's lesson ---
+        let blocked = false;
+        try {
+          await p.createRequest({ kind: "reschedule", studentId: "stu-bella", bookingId: "bk-3",
+            proposedStartISO: monday, proposedEndISO: addH(monday, 1) });
+        } catch (e) { blocked = true; }
+        check("parent BLOCKED from rescheduling another child", blocked);
+
+        // --- parent can create a valid additional request for own child ---
+        const created = await p.createRequest({ kind: "additional", studentId: "stu-aiden",
+          proposedStartISO: addH(monday, 100), proposedEndISO: addH(monday, 101), note: "test" });
+        check("parent created additional request", created.status === "pending");
+
+        // --- parent cannot resolve requests ---
+        let cannotResolve = false;
+        try { await p.resolveRequest("req-2", "approve"); } catch (e) { cannotResolve = true; }
+        check("parent BLOCKED from resolving requests", cannotResolve);
+
+        // --- tutor sees everything in full + can approve ---
+        await p.signIn("tutor@demo.app", "demo");
+        const tsched = await p.getWeekSchedule(monday);
+        check("tutor sees no anonymous lessons", tsched.lessons.every((l) => !l.anonymous));
+        check("tutor sees multiple students",
+              new Set(tsched.lessons.map((l) => l.studentName)).size >= 2);
+        const allReqs = await p.listRequests();
+        check("tutor sees all requests", allReqs.length >= 2);
+        const pending = allReqs.find((r) => r.status === "pending");
+        const resolved = await p.resolveRequest(pending.id, "approve");
+        check("tutor approved a request", resolved.status === "approved");
+
+        // --- co-parent (parent C, same child) sees Aiden but not others ---
+        await p.signIn("parent.c@demo.app", "demo");
+        const cSched = await p.getWeekSchedule(monday);
+        const cNamed = cSched.lessons.filter((l) => !l.anonymous);
+        check("co-parent sees Aiden's lessons", cNamed.some((l) => l.studentName === "Aiden"));
+        check("co-parent sees NO other named child", cNamed.every((l) => l.studentName === "Aiden"));
+        const cReqs = await p.listRequests();
+        check("co-parent does NOT see parent A's request notes",
+              cReqs.every((r) => r.parentUid === "parent-c"),
+              `saw parents: ${[...new Set(cReqs.map((r) => r.parentUid))].join(",")}`);
+
+        // --- output ---
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent =
+          results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST_OK" : "SELFTEST_FAIL";
+        window.__SELFTEST__ = { failed, total: results.length, results };
+      }
+
+      function mondayISO() {
+        const d = new Date();
+        const day = (d.getDay() + 6) % 7;
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() - day);
+        return d.toISOString();
+      }
+      function addH(iso, h) {
+        return new Date(new Date(iso).getTime() + h * 3600000).toISOString();
+      }
+
+      run().catch((e) => {
+        document.getElementById("out").textContent = "ERROR: " + e.stack;
+        document.title = "SELFTEST_FAIL";
+      });
+    </script>
+  </body>
+</html>
