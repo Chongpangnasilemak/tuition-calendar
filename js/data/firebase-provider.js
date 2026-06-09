@@ -503,12 +503,20 @@ export class FirebaseProvider extends DataProvider {
       throw new Error("Only a parent account can redeem an invite.");
     // Linking writes users.studentIds, which is NOT client-writable by design.
     // A trusted Cloud Function performs the link after validating the invite.
+    // On the free (Spark) plan the function isn't deployed, so this fails with a
+    // clear message and the tutor links the parent from the Firebase console.
     const fn = httpsCallable(this._functions, "redeemInvite");
     let res;
     try {
       res = await fn({ code: (code || "").trim() });
     } catch (e) {
-      throw new Error(e?.message || "Could not redeem invite.");
+      const c = e && e.code ? String(e.code) : "";
+      if (c.includes("not-found") || c.includes("internal") || c.includes("unavailable")) {
+        throw new Error(
+          "Self-serve invite codes aren't enabled on this project yet. Your tutor will connect your account to your child."
+        );
+      }
+      throw new Error((e && e.message) || "Could not redeem invite.");
     }
     const data = res?.data || {};
     if (!data.studentId) throw new Error(data.error || "Invite could not be redeemed.");
