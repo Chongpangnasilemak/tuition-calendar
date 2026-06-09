@@ -29,18 +29,31 @@ const LAST_USER_KEY = "tuition_demo_last_user";
 export class MockProvider extends DataProvider {
   constructor() {
     super();
-    this._users = USERS;
-    this._students = STUDENTS;
+    // Deep-clone the seed constants so mutations (add student/lesson, redeem
+    // invite) stay local to this instance and don't leak across providers/tests.
+    this._users = {};
+    this._students = {};
     this._lessons = [];
     this._requests = [];
+    this._invites = [];
     this._current = null; // uid string or null
     this._authCbs = new Set();
   }
 
   async init() {
     const now = new Date();
+    // Clone seed users/students (so add/edit doesn't touch the shared modules).
+    this._users = {};
+    for (const [k, u] of Object.entries(USERS)) {
+      this._users[k] = { ...u, studentIds: u.studentIds.slice() };
+    }
+    this._students = {};
+    for (const [k, s] of Object.entries(STUDENTS)) {
+      this._students[k] = { ...s, parentUids: s.parentUids.slice() };
+    }
     this._lessons = buildLessons(now);
     this._requests = buildRequests(now);
+    this._invites = [];
     // Restore last demo user (if any) for a smoother reload experience.
     try {
       const last = localStorage.getItem(LAST_USER_KEY);
@@ -88,8 +101,26 @@ export class MockProvider extends DataProvider {
 
   /** Demo sign-in: match by email; password is ignored. */
   async signIn(email /*, password */) {
-    const u = this._userByEmail(email);
-    if (!u) throw new Error("No demo account with that email.");
+    let u = this._userByEmail(email);
+    // Invite flow: a newly-invited parent has no seed account yet. If there's a
+    // pending invite for this email, auto-create a parent account so they can
+    // sign in and redeem it (mirrors "parent signs up via invite link").
+    if (!u) {
+      const clean = (email || "").trim().toLowerCase();
+      const invited = this._invites.some((i) => i.parentEmail === clean);
+      if (!invited) throw new Error("No demo account with that email.");
+      const uid = "parent-" + rid();
+      const key = uid;
+      const inv = this._invites.find((i) => i.parentEmail === clean);
+      this._users[key] = {
+        uid,
+        role: "parent",
+        email: clean,
+        displayName: inv?.parentName || clean,
+        studentIds: [],
+      };
+      u = this._users[key];
+    }
     this._current = u.uid;
     try {
       localStorage.setItem(LAST_USER_KEY, u.uid);
@@ -250,9 +281,147 @@ export class MockProvider extends DataProvider {
     return this._decorateRequest(req, v);
   }
 
+  // ---- tutor: lesson management ----
+  async addLesson({ studentId, startISO, endISO, subject, notes }) {
+    const v = this._requireTutor();
+    const student = this._students[studentId];
+    if (!student) throw new Error("Unknown student.");
+    if (!startISO || !endISO || endISO <= startISO)
+      throw new Error("Invalid lesson time range.");
+    const lesson = {
+      id: "bk-" + rid(),
+      studentId,
+      studentName: student.name,
+      subject: (subject || "Lesson").trim(),
+      notes: (notes || "").trim(),
+      startISO,
+      endISO,
+      status: "booked",
+    };
+    this._lessons.push(lesson);
+    return projectLessonForViewer(lesson, v);
+  }
+
+  async updateLesson(id, patch = {}) {
+    const v = this._requireTutor();
+    const lesson = this._lessons.find((l) => l.id === id);
+    if (!lesson) throw new Error("Lesson not found.");
+    if (patch.studentId && patch.studentId !== lesson.studentId) {
+      const s = this._students[patch.studentId];
+      if (!s) throw new Error("Unknown student.");
+      lesson.studentId = patch.studentId;
+      lesson.studentName = s.name;
+    }
+    if (patch.startISO) lesson.startISO = patch.startISO;
+    if (patch.endISO) lesson.endISO = patch.endISO;
+    if (lesson.endISO <= lesson.startISO)
+      throw new Error("End must be after start.");
+    if (patch.subject != null) lesson.subject = patch.subject.trim();
+    if (patch.notes != null) lesson.notes = patch.notes.trim();
+    return projectLessonForViewer(lesson, v);
+  }
+
+  async cancelLesson(id) {
+    this._requireTutor();
+    const i = this._lessons.findIndex((l) => l.id === id);
+    if (i === -1) throw new Error("Lesson not found.");
+    this._lessons.splice(i, 1);
+  }
+
+  // ---- tutor: students & onboarding ----
+  async listAllStudents() {
+    this._requireTutor();
+    return Object.values(this._students).map((s) => ({ id: s.id, name: s.name }));
+  }
+
+  async addStudent({ name, subject }) {
+    this._requireTutor();
+    const clean = (name || "").trim();
+    if (!clean) throw new Error("Student name is required.");
+    const id = "stu-" + rid();
+    this._students[id] = {
+      id,
+      name: clean,
+      subject: (subject || "").trim(),
+      parentUids: [],
+    };
+    return { id, name: clean };
+  }
+
+  async createInvite({ studentId, parentEmail, parentName }) {
+    this._requireTutor();
+    const student = this._students[studentId];
+    if (!student) throw new Error("Unknown student.");
+    const email = (parentEmail || "").trim().toLowerCase();
+    if (!email) throw new Error("Parent email is required.");
+    const invite = {
+      // Short, human-typeable code for the demo.
+      code: rcode(),
+      studentId,
+      studentName: student.name,
+      parentEmail: email,
+      parentName: (parentName || "").trim(),
+      status: "pending",
+      createdISO: new Date().toISOString(),
+    };
+    this._invites.push(invite);
+    return invite;
+  }
+
+  async listInvites() {
+    this._requireTutor();
+    return this._invites
+      .slice()
+      .sort((a, b) => b.createdISO.localeCompare(a.createdISO));
+  }
+
+  async redeemInvite(code) {
+    const v = this._requireViewer();
+    if (v.role !== "parent")
+      throw new Error("Only a parent account can redeem an invite.");
+    const invite = this._invites.find(
+      (i) => i.code.toUpperCase() === (code || "").trim().toUpperCase()
+    );
+    if (!invite) throw new Error("Invite code not found.");
+    if (invite.status === "redeemed")
+      throw new Error("This invite has already been used.");
+
+    // Link THIS parent to the invite's student (tutor-authored authority).
+    const user = this._userByUid(v.uid);
+    if (!user.studentIds.includes(invite.studentId)) {
+      user.studentIds.push(invite.studentId);
+    }
+    const student = this._students[invite.studentId];
+    if (student && !student.parentUids.includes(v.uid)) {
+      student.parentUids.push(v.uid);
+    }
+    invite.status = "redeemed";
+    invite.redeemedByUid = v.uid;
+
+    this._emit(); // viewer.studentIds changed -> re-render
+    return { studentId: invite.studentId, studentName: student?.name || invite.studentId };
+  }
+
+  _requireTutor() {
+    const v = this._requireViewer();
+    if (v.role !== "tutor") throw new Error("Tutor only.");
+    return v;
+  }
+
   _requireViewer() {
     const v = this._viewer();
     if (!v) throw new Error("Not signed in.");
     return v;
   }
+}
+
+// short random ids / codes for the demo
+function rid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+function rcode() {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
+  let s = "";
+  for (let i = 0; i < 6; i++) s += A[Math.floor(Math.random() * A.length)];
+  return s;
 }

@@ -1,50 +1,8 @@
 // Shared render helpers used by multiple views.
+// (The week calendar renders its own positioned event blocks; these helpers
+// cover requests, modals and toasts.)
 
-import { el, fmtTimeRange } from "../util.js";
-
-/**
- * Render a single lesson onto the calendar grid.
- *  - Own child / tutor view: full detail card (name, subject, notes).
- *  - Anonymous: a neutral "Busy" block with only the time. No identity exists
- *    on the object to leak.
- *
- * @param {import('../data/provider.js').Lesson} lesson
- * @param {{ onReschedule?: (lesson) => void }} [opts]
- */
-export function lessonBlock(lesson, opts = {}) {
-  if (lesson.anonymous) {
-    return el("div", { class: "lesson lesson--busy", title: "Booked (another student)" }, [
-      el("div", { class: "lesson__time" }, fmtTimeRange(lesson.startISO, lesson.endISO)),
-      el("div", { class: "lesson__busy-label" }, "Busy"),
-    ]);
-  }
-
-  const cls = lesson.mine ? "lesson lesson--mine" : "lesson lesson--detail";
-  const children = [
-    el("div", { class: "lesson__time" }, fmtTimeRange(lesson.startISO, lesson.endISO)),
-    el("div", { class: "lesson__name" }, lesson.studentName),
-  ];
-  if (lesson.subject)
-    children.push(el("div", { class: "lesson__subject" }, lesson.subject));
-  if (lesson.notes) children.push(el("div", { class: "lesson__notes" }, lesson.notes));
-
-  // A parent can propose a reschedule of their OWN child's lesson.
-  if (lesson.mine && opts.onReschedule) {
-    children.push(
-      el(
-        "button",
-        {
-          class: "lesson__action",
-          type: "button",
-          onClick: () => opts.onReschedule(lesson),
-        },
-        "Request reschedule"
-      )
-    );
-  }
-
-  return el("div", { class: cls }, children);
-}
+import { el } from "../util.js";
 
 export function statusPill(status) {
   return el("span", { class: `pill pill--${status}` }, status);

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tuition Calendar — tutor/onboarding self-test</title>
+  </head>
+  <body>
+    <h1>Self-test 2 (tutor + onboarding)</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      import { MockProvider } from "../js/data/mock-provider.js";
+
+      const results = [];
+      let failed = 0;
+      function check(name, cond, detail = "") {
+        results.push(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
+        if (!cond) failed++;
+      }
+      const mondayISO = () => {
+        const d = new Date();
+        const day = (d.getDay() + 6) % 7;
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() - day);
+        return d.toISOString();
+      };
+      const at = (dow, h, m = 0) => {
+        const d = new Date(mondayISO());
+        d.setDate(d.getDate() + dow);
+        d.setHours(h, m, 0, 0);
+        return d.toISOString();
+      };
+
+      async function run() {
+        const p = new MockProvider();
+        await p.init();
+
+        // ---- tutor-only guard: parent cannot add a lesson/student ----
+        await p.signIn("parent.a@demo.app", "demo");
+        let blocked = false;
+        try { await p.addLesson({ studentId: "stu-aiden", startISO: at(0, 10), endISO: at(0, 11) }); }
+        catch { blocked = true; }
+        check("parent BLOCKED from addLesson", blocked);
+        blocked = false;
+        try { await p.addStudent({ name: "Hacker" }); } catch { blocked = true; }
+        check("parent BLOCKED from addStudent", blocked);
+
+        // ---- tutor: add / edit / cancel a lesson ----
+        await p.signIn("tutor@demo.app", "demo");
+        const before = (await p.getWeekSchedule(mondayISO())).lessons.length;
+        const added = await p.addLesson({
+          studentId: "stu-bella", startISO: at(2, 19), endISO: at(2, 20),
+          subject: "Science", notes: "extra",
+        });
+        check("tutor added a lesson", added && added.anonymous === false);
+        const after = (await p.getWeekSchedule(mondayISO())).lessons.length;
+        check("lesson count increased", after === before + 1, `${before}->${after}`);
+
+        const upd = await p.updateLesson(added.id, { subject: "Physics" });
+        check("tutor edited lesson subject", upd.subject === "Physics");
+
+        await p.cancelLesson(added.id);
+        const after2 = (await p.getWeekSchedule(mondayISO())).lessons.length;
+        check("tutor cancelled lesson", after2 === before, `${after2} vs ${before}`);
+
+        // ---- tutor: add a student ----
+        const newStu = await p.addStudent({ name: "Evan", subject: "Maths" });
+        check("tutor added student", !!newStu.id && newStu.name === "Evan");
+        const roster = await p.listAllStudents();
+        check("roster includes new student", roster.some((s) => s.id === newStu.id));
+
+        // ---- onboarding: create invite for a NEW parent email ----
+        const inv = await p.createInvite({
+          studentId: newStu.id, parentEmail: "evan.parent@demo.app", parentName: "Evan's mum",
+        });
+        check("invite created with code", !!inv.code && inv.status === "pending");
+        const invites = await p.listInvites();
+        check("invite appears in list", invites.some((i) => i.code === inv.code));
+
+        // ---- parent signs up via invited email (auto-created) and redeems ----
+        const parent = await p.signIn("evan.parent@demo.app", "demo");
+        check("invited parent can sign in", parent.role === "parent");
+        check("new parent has NO children yet", parent.studentIds.length === 0);
+
+        // wrong code rejected
+        let bad = false;
+        try { await p.redeemInvite("WRONG1"); } catch { bad = true; }
+        check("wrong invite code rejected", bad);
+
+        const linked = await p.redeemInvite(inv.code);
+        check("redeem links to the right student", linked.studentId === newStu.id);
+        const me = await p.getCurrentUser();
+        check("parent now linked to child", me.studentIds.includes(newStu.id));
+
+        // double-redeem rejected
+        let dbl = false;
+        try { await p.redeemInvite(inv.code); } catch { dbl = true; }
+        check("invite cannot be redeemed twice", dbl);
+
+        // ---- the newly-linked parent sees their child in detail, others busy ----
+        await p.signIn("tutor@demo.app", "demo");
+        await p.addLesson({ studentId: newStu.id, startISO: at(3, 16), endISO: at(3, 17), subject: "Maths" });
+        await p.signIn("evan.parent@demo.app", "demo");
+        const sched = await p.getWeekSchedule(mondayISO());
+        const named = sched.lessons.filter((l) => !l.anonymous);
+        check("new parent sees own child's lesson", named.some((l) => l.studentName === "Evan"));
+        check("new parent sees NO other named child", named.every((l) => l.studentName === "Evan"),
+              named.map((l) => l.studentName).join(","));
+        const foreignLeak = sched.lessons.filter(
+          (l) => l.anonymous && ("studentName" in l || "notes" in l)
+        );
+        check("no foreign field leaked to new parent", foreignLeak.length === 0);
+
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST2_OK" : "SELFTEST2_FAIL";
+      }
+
+      run().catch((e) => {
+        document.getElementById("out").textContent = "ERROR: " + e.stack;
+        document.title = "SELFTEST2_FAIL";
+      });
+    </script>
+  </body>
+</html>

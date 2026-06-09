@@ -4,6 +4,7 @@ import { getProvider, getMode } from "./data/index.js";
 import { state, setViewer } from "./state.js";
 import { Router } from "./router.js";
 import { LoginView } from "./views/login-view.js";
+import { modal, toast } from "./views/components.js";
 import { el, clear } from "./util.js";
 
 const appEl = document.getElementById("app");
@@ -51,18 +52,29 @@ function renderShell(provider, router, viewer) {
   }
   headerEl.classList.add("topbar--show");
 
-  const nav = el("nav", { class: "topbar__nav" }, [
+  const navItems = [
     navLink("#/week", "Calendar"),
     navLink("#/requests", viewer.role === "tutor" ? "Requests" : "My requests"),
-  ]);
+  ];
+  if (viewer.role === "tutor") navItems.push(navLink("#/manage", "Manage"));
+  const nav = el("nav", { class: "topbar__nav" }, navItems);
 
-  const right = el("div", { class: "topbar__right" }, [
+  const rightItems = [
     el("span", { class: "topbar__user" }, [
       el("span", { class: `role-pill role-pill--${viewer.role}` }, viewer.role),
       el("span", {}, viewer.displayName),
     ]),
-    el("button", { class: "btn btn--ghost btn--sm", type: "button", onClick: () => provider.signOut() }, "Sign out"),
-  ]);
+  ];
+  // Parents can connect to a child via an invite code from the tutor.
+  if (viewer.role === "parent") {
+    rightItems.unshift(
+      el("button", { class: "btn btn--ghost btn--sm", type: "button", onClick: () => openRedeem(provider) }, "+ Connect child")
+    );
+  }
+  rightItems.push(
+    el("button", { class: "btn btn--ghost btn--sm", type: "button", onClick: () => provider.signOut() }, "Sign out")
+  );
+  const right = el("div", { class: "topbar__right" }, rightItems);
 
   headerEl.appendChild(
     el("div", { class: "topbar" }, [
@@ -85,6 +97,39 @@ function showLogin(provider) {
   clear(appEl);
   const view = new LoginView(appEl, provider, state.mode);
   view.render();
+}
+
+/** Parent redeems an invite code to connect to their child. */
+function openRedeem(provider) {
+  const code = el("input", { class: "field__input", type: "text", placeholder: "e.g. ABC123", autocapitalize: "characters" });
+  const submit = el("button", { class: "btn btn--primary", type: "button" }, "Connect");
+  const { close } = modal(
+    "Connect to your child",
+    [
+      el("p", { class: "muted" }, "Enter the invite code your tutor gave you. It links your account to your child's schedule."),
+      el("div", { class: "form" }, [
+        el("label", { class: "field" }, [el("span", { class: "field__label" }, "Invite code"), code]),
+      ]),
+    ],
+    [submit]
+  );
+  submit.addEventListener("click", async () => {
+    if (!code.value.trim()) {
+      toast("Please enter your invite code.", "error");
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const res = await provider.redeemInvite(code.value.trim());
+      close();
+      toast(`Connected to ${res.studentName}.`, "success");
+      // The provider emits an auth change (studentIds updated) -> the shell
+      // re-renders automatically.
+    } catch (e) {
+      submit.disabled = false;
+      toast(e.message, "error");
+    }
+  });
 }
 
 boot();

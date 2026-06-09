@@ -32,11 +32,17 @@ import {
   getDoc,
   doc,
   addDoc,
+  setDoc,
   updateDoc,
+  deleteDoc,
   writeBatch,
   Timestamp,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import {
+  getFunctions,
+  httpsCallable,
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js";
 
 import { DataProvider } from "./provider.js";
 
@@ -55,6 +61,7 @@ export class FirebaseProvider extends DataProvider {
     this._app = initializeApp(this._config);
     this._auth = getAuth(this._app);
     this._db = getFirestore(this._app);
+    this._functions = getFunctions(this._app);
 
     // Keep a Viewer in sync with auth + the user's /users doc + /admins marker.
     onAuthStateChanged(this._auth, async (fbUser) => {
@@ -325,6 +332,184 @@ export class FirebaseProvider extends DataProvider {
     return out;
   }
 
+  // ---- tutor: lesson management ----
+  async addLesson({ studentId, startISO, endISO, subject, notes }) {
+    const v = this._requireTutor();
+    const db = this._db;
+    const s = await getDoc(doc(db, "students", studentId));
+    if (!s.exists()) throw new Error("Unknown student.");
+    if (!startISO || !endISO || endISO <= startISO)
+      throw new Error("Invalid lesson time range.");
+
+    const id = doc(collection(db, "bookings")).id; // opaque shared id
+    const start = Timestamp.fromDate(new Date(startISO));
+    const end = Timestamp.fromDate(new Date(endISO));
+    const batch = writeBatch(db);
+    batch.set(doc(db, "bookings", id), {
+      start, end,
+      durationMins: Math.round((end.toMillis() - start.toMillis()) / 60000),
+      status: "booked",
+      kind: "lesson",
+    });
+    batch.set(doc(db, "lessons", id), {
+      bookingId: id,
+      studentId,
+      studentName: s.data().name,
+      subject: (subject || "Lesson").trim(),
+      notes: (notes || "").trim(),
+      start, end,
+      status: "booked",
+    });
+    await batch.commit();
+    return {
+      id, startISO, endISO, anonymous: false, mine: false,
+      studentId, studentName: s.data().name, subject: (subject || "Lesson").trim(),
+      notes: (notes || "").trim(),
+    };
+  }
+
+  async updateLesson(id, patch = {}) {
+    this._requireTutor();
+    const db = this._db;
+    const lessonRef = doc(db, "lessons", id);
+    const snap = await getDoc(lessonRef);
+    if (!snap.exists()) throw new Error("Lesson not found.");
+    const cur = snap.data();
+
+    const lessonPatch = {};
+    const bookingPatch = {};
+    if (patch.studentId && patch.studentId !== cur.studentId) {
+      const s = await getDoc(doc(db, "students", patch.studentId));
+      if (!s.exists()) throw new Error("Unknown student.");
+      lessonPatch.studentId = patch.studentId;
+      lessonPatch.studentName = s.data().name;
+    }
+    if (patch.startISO) {
+      const t = Timestamp.fromDate(new Date(patch.startISO));
+      lessonPatch.start = t; bookingPatch.start = t;
+    }
+    if (patch.endISO) {
+      const t = Timestamp.fromDate(new Date(patch.endISO));
+      lessonPatch.end = t; bookingPatch.end = t;
+    }
+    if (patch.subject != null) lessonPatch.subject = patch.subject.trim();
+    if (patch.notes != null) lessonPatch.notes = patch.notes.trim();
+
+    const batch = writeBatch(db);
+    if (Object.keys(lessonPatch).length) batch.update(lessonRef, lessonPatch);
+    if (Object.keys(bookingPatch).length) batch.update(doc(db, "bookings", id), bookingPatch);
+    await batch.commit();
+
+    const after = { ...cur, ...lessonPatch };
+    return this._lessonFull(id, after, false);
+  }
+
+  async cancelLesson(id) {
+    this._requireTutor();
+    const db = this._db;
+    const batch = writeBatch(db);
+    batch.delete(doc(db, "lessons", id));
+    batch.delete(doc(db, "bookings", id));
+    await batch.commit();
+  }
+
+  // ---- tutor: students & onboarding ----
+  async listAllStudents() {
+    this._requireTutor();
+    const snap = await getDocs(collection(this._db, "students"));
+    return snap.docs.map((d) => ({ id: d.id, name: d.data().name }));
+  }
+
+  async addStudent({ name, subject }) {
+    this._requireTutor();
+    const clean = (name || "").trim();
+    if (!clean) throw new Error("Student name is required.");
+    const ref = doc(collection(this._db, "students"));
+    await setDoc(ref, {
+      name: clean,
+      subject: (subject || "").trim(),
+      parentUids: [],
+      createdAt: serverTimestamp(),
+    });
+    return { id: ref.id, name: clean };
+  }
+
+  async createInvite({ studentId, parentEmail, parentName }) {
+    const v = this._requireTutor();
+    const db = this._db;
+    const s = await getDoc(doc(db, "students", studentId));
+    if (!s.exists()) throw new Error("Unknown student.");
+    const email = (parentEmail || "").trim().toLowerCase();
+    if (!email) throw new Error("Parent email is required.");
+
+    const code = rcode();
+    // Invite doc id == code (codes are unique enough for a solo tutor; the
+    // Cloud Function enforces single-use on redeem).
+    await setDoc(doc(db, "invites", code), {
+      code,
+      studentId,
+      studentName: s.data().name,
+      parentEmail: email,
+      parentName: (parentName || "").trim(),
+      status: "pending",
+      tutorUid: v.uid,
+      createdAt: serverTimestamp(),
+    });
+    return {
+      code, studentId, studentName: s.data().name, parentEmail: email,
+      parentName: (parentName || "").trim(), status: "pending",
+      createdISO: new Date().toISOString(),
+    };
+  }
+
+  async listInvites() {
+    this._requireTutor();
+    const snap = await getDocs(collection(this._db, "invites"));
+    return snap.docs
+      .map((d) => {
+        const r = d.data();
+        return {
+          code: r.code || d.id,
+          studentId: r.studentId,
+          studentName: r.studentName,
+          parentEmail: r.parentEmail,
+          parentName: r.parentName || "",
+          status: r.status || "pending",
+          createdISO: tsToISO(r.createdAt) || new Date(0).toISOString(),
+        };
+      })
+      .sort((a, b) => b.createdISO.localeCompare(a.createdISO));
+  }
+
+  async redeemInvite(code) {
+    const v = this._requireViewer();
+    if (v.role !== "parent")
+      throw new Error("Only a parent account can redeem an invite.");
+    // Linking writes users.studentIds, which is NOT client-writable by design.
+    // A trusted Cloud Function performs the link after validating the invite.
+    const fn = httpsCallable(this._functions, "redeemInvite");
+    let res;
+    try {
+      res = await fn({ code: (code || "").trim() });
+    } catch (e) {
+      throw new Error(e?.message || "Could not redeem invite.");
+    }
+    const data = res?.data || {};
+    if (!data.studentId) throw new Error(data.error || "Invite could not be redeemed.");
+    // Refresh the viewer so the new studentId is reflected immediately.
+    if (this._auth.currentUser) {
+      this._viewer = await this._loadViewer(this._auth.currentUser);
+      for (const cb of this._authCbs) cb(this._viewer);
+    }
+    return { studentId: data.studentId, studentName: data.studentName || data.studentId };
+  }
+
+  _requireTutor() {
+    const v = this._requireViewer();
+    if (v.role !== "tutor") throw new Error("Tutor only.");
+    return v;
+  }
+
   // ---- helpers ----
   _reqOut(id, r) {
     return {
@@ -378,4 +563,10 @@ function strip(l) {
 }
 function* chunk30(arr) {
   for (let i = 0; i < arr.length; i += 30) yield arr.slice(i, i + 30);
+}
+function rcode() {
+  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
+  let s = "";
+  for (let i = 0; i < 6; i++) s += A[Math.floor(Math.random() * A.length)];
+  return s;
 }

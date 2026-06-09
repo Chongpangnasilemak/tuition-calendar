@@ -133,6 +133,19 @@ service cloud.firestore {
             && resource.data.status == 'pending');
     }
 
+    // ---- invites: link a parent account to a student.
+    //      ONLY the tutor reads/writes invites from the client. A parent must
+    //      NOT read invites (they pair student names with parent emails) and
+    //      must NOT write the link itself. Redemption is performed by the
+    //      `redeemInvite` Cloud Function (Admin SDK), which validates the code,
+    //      enforces single-use, and is the only thing that writes
+    //      users/{uid}.studentIds. The Admin SDK bypasses these rules, so no
+    //      client read/write path to invites is needed for parents. ----
+    match /invites/{code} {
+      allow read, write: if isTutor();
+      // parents: no client access (the Cloud Function handles redemption)
+    }
+
     // -------------------------- Default deny ---------------------------------
     match /{document=**} { allow read, write: if false; }
   }

@@ -130,6 +130,8 @@ h2 { font-size: 1.1rem; margin: 0; }
 .btn--ghost:hover { background: var(--surface-2); }
 .btn--sm { padding: 0.35rem 0.6rem; font-size: 0.85rem; }
 .btn--block { width: 100%; }
+.btn--danger { background: transparent; border-color: var(--danger); color: var(--danger); margin-right: auto; }
+.btn--danger:hover { background: var(--danger); color: #fff; }
 
 /* ----- week bar ----- */
 .week__bar {
@@ -150,76 +152,137 @@ h2 { font-size: 1.1rem; margin: 0; }
 .swatch--mine { background: var(--mine-bg); border: 1px solid var(--mine); }
 .swatch--busy { background: var(--busy-bg); border: 1px solid var(--border); }
 
-/* ----- calendar grid ----- */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 0.5rem;
-  align-items: start;
+/* ----- time-grid calendar ----- */
+:root { --gutter-w: 52px; }
+
+.cal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
 }
-.grid__loading, .grid__empty, .error {
-  grid-column: 1 / -1;
+.cal__loading, .cal__empty, .error {
   padding: 1.5rem;
   text-align: center;
   color: var(--muted);
 }
 .error { color: var(--danger); }
 
-.col {
+/* sticky header row: a corner over the gutter + 7 day headers */
+.cal__head {
+  display: grid;
+  grid-template-columns: var(--gutter-w) repeat(7, 1fr);
+  position: sticky;
+  top: 0;
+  z-index: 5;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  min-height: 120px;
-}
-.col__head {
-  padding: 0.5rem 0.6rem;
-  background: var(--surface-2);
   border-bottom: 1px solid var(--border);
+}
+.cal__corner { background: var(--surface-2); }
+.cal__dayhead {
+  padding: 0.45rem 0.3rem;
+  text-align: center;
+  border-left: 1px solid var(--border);
+  background: var(--surface-2);
   display: flex;
   flex-direction: column;
   gap: 1px;
+  line-height: 1.15;
 }
-.col__day { font-weight: 700; }
-.col__date { font-size: 0.75rem; color: var(--muted); }
-.col__body { padding: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.cal__dayhead.is-today { background: var(--mine-bg); }
+.cal__dayname { font-weight: 700; font-size: 0.82rem; }
+.cal__daydate { font-size: 0.72rem; color: var(--muted); }
+.cal__dayhead.is-today .cal__daydate { color: var(--mine); }
 
-/* ----- lesson blocks ----- */
-.lesson {
-  border-radius: 10px;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.82rem;
+/* scrollable body: gutter + 7 day columns, all the same pixel height */
+.cal__body {
+  display: grid;
+  grid-template-columns: var(--gutter-w) repeat(7, 1fr);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.cal__gutter { position: relative; background: var(--surface-2); }
+.cal__hourlabel {
+  position: absolute;
+  right: 6px;
+  transform: translateY(-50%);
+  font-size: 0.68rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cal__col {
+  position: relative;
+  border-left: 1px solid var(--border);
+}
+.cal__col.is-today { background: color-mix(in srgb, var(--mine-bg) 35%, transparent); }
+.cal__col--addable { cursor: copy; }
+.cal__col--addable:hover { background: color-mix(in srgb, var(--primary) 6%, transparent); }
+.cal__hourline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--border);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* ----- event blocks (absolutely positioned) ----- */
+.ev {
+  position: absolute;
+  border-radius: 8px;
+  padding: 4px 7px;
+  overflow: hidden;
+  font-size: 0.78rem;
+  line-height: 1.2;
   border: 1px solid var(--border);
   background: var(--surface-2);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
 }
-.lesson__time { font-weight: 700; font-size: 0.78rem; }
-.lesson__name { font-weight: 600; margin-top: 2px; }
-.lesson__subject { color: var(--muted); }
-.lesson__notes { color: var(--muted); font-size: 0.76rem; margin-top: 2px; }
-.lesson--mine { background: var(--mine-bg); border-color: var(--mine); }
-.lesson--mine .lesson__time { color: var(--mine); }
-.lesson--busy {
+.ev__title {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ev__time { font-size: 0.72rem; opacity: 0.85; margin-top: 1px; }
+.ev__notes {
+  font-size: 0.7rem;
+  opacity: 0.8;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ev--short { padding: 2px 7px; }
+.ev--short .ev__title { font-size: 0.72rem; }
+
+.ev--mine {
+  background: var(--mine-bg);
+  border-color: var(--mine);
+  color: var(--text);
+}
+.ev--mine .ev__title { color: var(--mine); }
+.ev--detail { /* tutor view, any student */
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+@media (prefers-color-scheme: dark) {
+  .ev--detail { background: #25304d; border-color: #3a4a78; }
+}
+.ev--busy {
   background: repeating-linear-gradient(
-    45deg, var(--busy-bg), var(--busy-bg) 7px,
-    transparent 7px, transparent 14px
+    45deg, var(--busy-bg), var(--busy-bg) 6px,
+    transparent 6px, transparent 12px
   );
   color: var(--busy-text);
+  border-style: dashed;
 }
-.lesson--busy .lesson__busy-label { font-weight: 600; letter-spacing: 0.03em; }
-.lesson__action {
-  margin-top: 0.45rem;
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 600;
-  cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--mine);
-  color: var(--mine);
-  border-radius: 7px;
-  padding: 0.25rem 0.45rem;
-  width: 100%;
+.ev--clickable { cursor: pointer; }
+.ev--clickable:hover {
+  filter: brightness(0.97);
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.18);
 }
-.lesson__action:hover { background: var(--mine); color: #fff; }
 
 /* ----- requests ----- */
 .section__head { margin-bottom: 1rem; }
@@ -376,10 +439,53 @@ textarea.field__input { resize: vertical; }
 .toast--success { background: var(--success); color: #fff; }
 .toast--error { background: var(--danger); color: #fff; }
 
-/* ----- responsive: stack the week into day rows on narrow screens ----- */
+/* ----- manage view ----- */
+.manage__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.manage__h2 { margin: 1.25rem 0 0.6rem; font-size: 1rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+.invite__row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.4rem 0; }
+.invite__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 2px 8px;
+}
+.invite__hint { font-size: 0.82rem; margin: 0.4rem 0 0; }
+.invite__bigcode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 800;
+  font-size: 2rem;
+  letter-spacing: 0.18em;
+  text-align: center;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 0.9rem;
+  margin: 0.6rem 0;
+}
+
+/* ----- responsive ----- */
 @media (max-width: 760px) {
-  .grid { grid-template-columns: 1fr; }
-  .col { min-height: 0; }
-  .col__head { flex-direction: row; gap: 0.5rem; align-items: baseline; }
-  .week__range { width: 100%; order: -1; }
+  .week__range { width: 100%; order: -1; text-align: center; }
+  .week__hint, .week__bar .btn--primary { margin-left: 0; }
+  /* Keep the 7-day grid but let it scroll sideways; widen columns so labels
+     stay legible and the gutter sticks to the left. */
+  .cal { overflow-x: auto; }
+  .cal__head, .cal__body {
+    grid-template-columns: var(--gutter-w) repeat(7, minmax(96px, 1fr));
+    min-width: 760px;
+  }
+  .cal__body { max-height: 65vh; }
+  .cal__gutter, .cal__corner { position: sticky; left: 0; z-index: 2; }
 }

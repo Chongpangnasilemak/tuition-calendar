@@ -10,8 +10,17 @@ A scheduling calendar for a private tutor and their parents.
   else you teach.
 - Parents can **propose a reschedule** of their child's lesson, or **request an
   additional lesson** in a free slot.
-- The **tutor** has an admin view: sees every lesson in full detail and
-  **approves or declines** incoming requests.
+- The **tutor** has an admin view: a full week **time-grid** (8am–9pm) where they
+  can **add a lesson** (click an empty slot or the "+ Add lesson" button),
+  **edit or cancel** any lesson, and **approve/decline** parent requests.
+- The tutor can **add students** and **invite parents** (Manage tab): inviting
+  generates a code the parent enters to connect to their child. The parent never
+  links themselves — only a tutor-created invite can — which is what keeps the
+  anonymization guarantee intact.
+
+The calendar is a proper time-grid: each lesson sits at its real time and is
+sized by its duration, so empty space is the tutor's free time. Parents see their
+own child's lessons in blue and everyone else as grey "Busy" blocks.
 
 It's a **static site** (plain HTML/CSS/JS, no build step) that runs two ways:
 
@@ -98,42 +107,56 @@ with your real config. (Firebase web config values are not secrets — they ship
 to every browser; the security rules do the protecting. For a public repo,
 prefer a **private fork** or injecting the values at deploy time.)
 
-### 3. Deploy rules + indexes
+### 3. Deploy rules, indexes, and the Cloud Function
 
-Install the Firebase CLI and deploy the rules and indexes in this repo:
+Install the Firebase CLI and deploy. The repo already contains `firestore.rules`,
+`firestore.indexes.json`, `firebase.json`, and the `functions/` folder.
 
 ```bash
 npm install -g firebase-tools      # one-time
 firebase login
-firebase init firestore            # select your project; keep firestore.rules + firestore.indexes.json
-firebase deploy --only firestore:rules,firestore:indexes
+firebase use --add                 # select your project
+cd functions && npm install && cd ..
+firebase deploy --only firestore:rules,firestore:indexes,functions
 ```
 
-(`firestore.rules` and `firestore.indexes.json` are already written — point the
-CLI at them.)
+The **Cloud Function** (`functions/index.js`) does exactly one privileged thing:
+`redeemInvite` links a parent to a student when they enter a valid invite code.
+This is the *only* code that may write `users/{uid}.studentIds` — clients can't,
+which is what stops a parent linking themselves to another child. (Deploying
+functions needs the Blaze plan, but usage at this scale stays within the free
+allowance. If you'd rather not deploy functions, you can do parent linking by
+hand in the console instead — see step 4's note.)
 
-### 4. Provision your data (in the Firebase console)
+### 4. Make yourself the tutor (one console step)
 
-These collections are **never** writable from the app — you set them up once:
+Just one thing must be set by hand, once:
 
-- **`admins/{yourUid}`** — create an empty doc whose id is *your* Auth UID. Its
-  existence makes you the tutor.
-- **`users/{uid}`** for every person — fields:
-  `role` (`"tutor"` or `"parent"`), `displayName`, `email`, and for parents
-  `studentIds` (array of the student doc-ids they may see).
-- **`students/{studentId}`** — `name`, and `parentUids` (array, used only as a
-  query convenience).
+- **`admins/{yourUid}`** — after you sign up / sign in once (Authentication →
+  Users shows your UID), create an empty doc at `admins/<your-uid>` in Firestore.
+  Its existence makes you the tutor.
 
-Lessons are created by the app (the tutor adds them / approvals create them).
-Each lesson is a `bookings/{id}` doc (`start`, `end`, `durationMins`, `status`,
-`kind`) plus a `lessons/{id}` doc with the same id (`studentId`, `studentName`,
-`subject`, `notes`, `start`, `end`, `status`).
+That's it. **Everything else is done from the app:**
+
+- Add students → **Manage → + Add student**
+- Onboard a parent → **Manage → ✉ Invite a parent** (gives you a code) → the
+  parent signs up with their email and enters the code via **+ Connect child**.
+- Add / edit / cancel lessons → the **Calendar** tab.
+
+> Prefer not to deploy the Cloud Function? You can link a parent manually instead:
+> in Firestore, add the student's id to that parent's `users/{uid}.studentIds`
+> array. The in-app invite flow simply automates this securely.
+
+**Data model reference** (created by the app): each lesson is a `bookings/{id}`
+doc (`start`, `end`, `durationMins`, `status`, `kind` — *time only, no identity*)
+plus a `lessons/{id}` doc with the same id (`studentId`, `studentName`, `subject`,
+`notes`, `start`, `end`, `status`). Invites live in `invites/{code}`.
 
 ### 5. Use it
 
 Open the GitHub Pages URL with `?live=1` (or just open it — once the config is
-real, live mode is the default). Parents sign in with the email/password you
-created for them in Firebase Auth.
+real, live mode is the default). You sign in, your parents sign in with their own
+email/password, and onboarding happens through the invite flow above.
 
 ---
 
@@ -142,29 +165,36 @@ created for them in Firebase Auth.
 ```
 index.html                 single page, loads js/main.js (ES module)
 firebase-config.js         PLACEHOLDER -> forces demo by default
+firebase.json              Firebase CLI config (rules, indexes, functions)
 firestore.rules            security rules (the anonymization guarantee)
 firestore.indexes.json     composite indexes for the week queries
 .github/workflows/deploy.yml  GitHub Pages deploy
 css/app.css
+functions/
+  index.js                 Cloud Function: redeemInvite (secure parent linking)
+  package.json
 js/
-  main.js                  bootstrap: pick provider, wire auth -> shell -> router
-  router.js                hash routes (#/week, #/requests)
+  main.js                  bootstrap: provider, auth -> shell -> router, redeem
+  router.js                hash routes (#/week, #/requests, #/manage)
   state.js                 shared viewer state
   util.js                  DOM + date/time helpers
   data/
     provider.js            DataProvider interface + typedefs
     index.js               provider selection (demo vs live)
     anonymize.js           shared pure projectLessonForViewer()
-    mock-provider.js       in-memory demo backend
+    mock-provider.js       in-memory demo backend (full tutor + onboarding)
     mock-data.js           seed accounts/students/lessons/requests
-    firebase-provider.js   live Firestore + Auth backend
+    firebase-provider.js   live Firestore + Auth + Functions backend
   views/
-    week-view.js           weekly calendar + request flows
+    week-view.js           time-grid calendar + request/add/edit/cancel flows
     requests-view.js       request list / tutor approvals
+    manage-view.js         tutor: add student, invite parent, list (tutor only)
     login-view.js          demo accounts / email+password
-    components.js          shared render helpers (lesson block, modal, toast)
+    components.js          shared render helpers (modal, toast, pills)
 tests/
-  selftest.html            in-browser privacy/behaviour self-tests
+  selftest.html            privacy/behaviour self-tests (22)
+  selftest2.html           tutor + onboarding self-tests (19)
+  rendertest.html          time-grid structural render check
 ```
 
 ## Security notes

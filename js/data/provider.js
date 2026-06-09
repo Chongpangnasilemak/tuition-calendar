@@ -98,4 +98,58 @@ export class DataProvider {
    * @param {string} id @param {'approve'|'decline'} action @returns {Promise<Request>}
    */
   async resolveRequest(id, action) { throw new Error("not implemented"); }
+
+  // ---- tutor: lesson management ----
+  /**
+   * Tutor only. Create a lesson (writes a booking + a lesson record).
+   * @param {{studentId:string, startISO:string, endISO:string,
+   *          subject?:string, notes?:string}} payload
+   * @returns {Promise<import('./provider.js').Lesson>}
+   */
+  async addLesson(payload) { throw new Error("not implemented"); }
+
+  /**
+   * Tutor only. Update a lesson's time and/or detail.
+   * @param {string} id  the bookingId/lessonId
+   * @param {{startISO?:string, endISO?:string, subject?:string, notes?:string,
+   *          studentId?:string}} patch
+   * @returns {Promise<import('./provider.js').Lesson>}
+   */
+  async updateLesson(id, patch) { throw new Error("not implemented"); }
+
+  /** Tutor only. Cancel (delete) a lesson. @param {string} id */
+  async cancelLesson(id) { throw new Error("not implemented"); }
+
+  // ---- tutor: students & onboarding ----
+  /** Tutor only. List ALL students (roster). @returns {Promise<StudentRef[]>} */
+  async listAllStudents() { throw new Error("not implemented"); }
+
+  /**
+   * Tutor only. Add a new student to the roster.
+   * @param {{name:string, subject?:string}} payload
+   * @returns {Promise<StudentRef>}
+   */
+  async addStudent(payload) { throw new Error("not implemented"); }
+
+  /**
+   * Tutor only. Create an invite that links a (future) parent account to a
+   * student. The parent redeems the returned code to gain access. The parent
+   * NEVER writes their own link — only this tutor-authored invite can.
+   * @param {{studentId:string, parentEmail:string, parentName?:string}} payload
+   * @returns {Promise<{code:string, studentId:string, parentEmail:string,
+   *                    parentName?:string, status:'pending'|'redeemed', createdISO:string}>}
+   */
+  async createInvite(payload) { throw new Error("not implemented"); }
+
+  /** Tutor only. List invites this tutor created. @returns {Promise<Array>} */
+  async listInvites() { throw new Error("not implemented"); }
+
+  /**
+   * Redeem an invite code: links the CURRENT signed-in parent to the invite's
+   * student. In live mode this is performed by trusted server logic (a Cloud
+   * Function), because writing users.studentIds is not allowed from the browser.
+   * @param {string} code
+   * @returns {Promise<{studentId:string, studentName:string}>}
+   */
+  async redeemInvite(code) { throw new Error("not implemented"); }
 }

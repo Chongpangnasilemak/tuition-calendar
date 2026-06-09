@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WeekView render test</title>
+    <link rel="stylesheet" href="../css/app.css" />
+  </head>
+  <body>
+    <div id="app" class="app"></div>
+    <pre id="report"></pre>
+    <script type="module">
+      // Mounts the REAL WeekView as a signed-in parent and reports structural
+      // facts about the rendered time-grid so a headless check can assert them.
+      import { MockProvider } from "../js/data/mock-provider.js";
+      import { WeekView } from "../js/views/week-view.js";
+
+      const p = new MockProvider();
+      await p.init();
+      const viewer = await p.signIn("parent.a@demo.app", "demo");
+
+      const mount = document.getElementById("app");
+      const view = new WeekView(mount, p, viewer);
+      await view.render();
+
+      // Wait a frame for the grid to populate.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const evs = [...mount.querySelectorAll(".ev")];
+      const positioned = evs.filter((e) => /top:\s*\d/.test(e.getAttribute("style") || "") && /height:\s*\d/.test(e.getAttribute("style") || ""));
+      const mine = mount.querySelectorAll(".ev--mine").length;
+      const busy = mount.querySelectorAll(".ev--busy").length;
+      const hourlabels = mount.querySelectorAll(".cal__hourlabel").length;
+      const cols = mount.querySelectorAll(".cal__col").length;
+      const dayheads = mount.querySelectorAll(".cal__dayhead").length;
+
+      const lines = [
+        `grid present: ${!!mount.querySelector(".cal")}`,
+        `day columns: ${cols} (expect 7)`,
+        `day headers: ${dayheads} (expect 7)`,
+        `hour labels: ${hourlabels} (expect 14 for 8am-9pm)`,
+        `event blocks: ${evs.length}`,
+        `positioned (top+height): ${positioned.length} / ${evs.length}`,
+        `mine (blue) blocks: ${mine}`,
+        `busy (anonymous) blocks: ${busy}`,
+        `parent sees NO named foreign block: ${![...mount.querySelectorAll(".ev--detail")].length}`,
+      ];
+      const ok =
+        !!mount.querySelector(".cal") &&
+        cols === 7 &&
+        dayheads === 7 &&
+        hourlabels === 14 &&
+        evs.length > 0 &&
+        positioned.length === evs.length &&
+        mine > 0 &&
+        busy > 0;
+
+      document.getElementById("report").textContent = lines.join("\n") + "\n\n" + (ok ? "RENDER_OK" : "RENDER_FAIL");
+      document.title = ok ? "RENDER_OK" : "RENDER_FAIL";
+    </script>
+  </body>
+</html>
