@@ -13,10 +13,11 @@ A scheduling calendar for a private tutor and their parents.
 - The **tutor** has an admin view: a full week **time-grid** (8am–9pm) where they
   can **add a lesson** (click an empty slot or the "+ Add lesson" button),
   **edit or cancel** any lesson, and **approve/decline** parent requests.
-- The tutor can **add students** and **invite parents** (Manage tab): inviting
-  generates a code the parent enters to connect to their child. The parent never
-  links themselves — only a tutor-created invite can — which is what keeps the
-  anonymization guarantee intact.
+- The tutor can **add / remove students** and **invite parents** (Manage tab):
+  inviting generates a code the parent enters to connect to their child. The
+  parent never links themselves — only a tutor-created invite can — which is what
+  keeps the anonymization guarantee intact. Removing a student deletes their
+  lessons and unlinks their parents.
 
 The calendar is a proper time-grid: each lesson sits at its real time and is
 sized by its duration, so empty space is the tutor's free time. Parents see their
@@ -26,59 +27,70 @@ It's a **static site** (plain HTML/CSS/JS, no build step) that runs two ways:
 
 | Mode | Backend | When |
 |---|---|---|
-| **Demo** (default) | in-memory mock data | Local preview & the public GitHub Pages build. Nothing is saved; a reload resets it. |
-| **Live** | Firebase (Firestore + Auth) | Your real schedule, shared across devices, requests saved. |
+| **Live** (default) | Firebase (Firestore + Auth + Functions) | The real schedule, shared across devices, data saved. Selected automatically because `firebase-config.js` holds a real config. |
+| **Demo** | in-memory mock data | Add `?demo=1` to the URL. Self-contained sandbox; changes persist in that browser (localStorage) until you Reset. |
+
+> **This project is LIVE.** It's deployed to GitHub Pages and connected to the
+> Firebase project **`tuition-calendar-670e3`**. Public URL:
+> <https://chongpangnasilemak.github.io/tuition-calendar/>. To turn it back into
+> a safe public demo, replace the `apiKey` in `firebase-config.js` with a
+> `"DEMO_..."` placeholder.
 
 ---
 
-## Run it locally (demo mode)
+## Run it locally
 
 No installs needed beyond Python (already on macOS):
 
 ```bash
 cd tuition-calendar
 python3 -m http.server 8765
-# then open http://localhost:8765
+# Live mode (talks to the real Firebase project): http://localhost:8765
+# Demo mode (offline sandbox):                    http://localhost:8765/?demo=1
 ```
 
-Pick any demo account on the login screen:
+`localhost` is an allowed referrer on the Firebase API key, so live mode works
+locally too.
 
-- **Ms. Tutor (you)** — the admin view; approve/decline requests.
+### Demo mode
+
+Add `?demo=1`. Pick a quick demo account, or sign in/up with any email:
+
+- **Ms. Tutor (you)** — the admin view; add/edit/cancel lessons, manage
+  students, approve/decline requests.
 - **Parent A / B / C** — parent view; sees only that child plus anonymous
   "Busy" blocks. (Parent A and C are two parents of the *same* child, so you can
   see that co-parents don't see each other's private request notes.)
 
+Demo changes persist in the browser (localStorage). The banner has a **Reset
+demo** button (or append `?reset=1`) to wipe back to the sample data.
+
 ### Run the self-tests
 
-`tests/selftest.html` drives the data layer and asserts the privacy invariants
-(a parent never receives another student's name/notes). Open it in a browser
-with the server running:
+Open these in a browser with the server running; each sets its `<title>` to
+`*_OK` and lists passing checks:
 
-```
-http://localhost:8765/tests/selftest.html
-```
-
-The page title becomes `SELFTEST_OK` and lists 22 passing checks.
-
----
-
-## Publish to GitHub Pages (demo build)
-
-The repo includes `.github/workflows/deploy.yml`, which publishes the site on
-every push to `main`.
-
-1. Create a GitHub repo and push this folder to it.
-2. In the repo: **Settings → Pages → Build and deployment → Source = GitHub
-   Actions**.
-3. Push to `main`. The workflow deploys the site to
-   `https://<you>.github.io/<repo>/`.
-
-The committed `firebase-config.js` is a **placeholder**, so the public build
-stays in safe **demo mode** — it never contacts a database.
+| File | Covers | Checks |
+|---|---|---|
+| `tests/selftest.html` | privacy invariants (a parent never receives another student's name/notes) | 22 |
+| `tests/selftest2.html` | tutor lesson mgmt + onboarding + remove-student | 26 |
+| `tests/selftest3.html` | demo localStorage persistence (invite survives reload) | 8 |
+| `tests/rendertest.html` | time-grid structural render | — |
 
 ---
 
-## Go live with Firebase (real, shared data)
+## Deployment
+
+GitHub Pages auto-deploys on every push to `main` via
+`.github/workflows/deploy.yml`. Firestore rules/indexes and the Cloud Function
+are deployed with the Firebase CLI (see below) — those do **not** ship via Pages.
+
+To set up Pages on a fresh repo: **Settings → Pages → Build and deployment →
+Source = GitHub Actions**, then push to `main`.
+
+---
+
+## Firebase setup (how this project was wired — and how to redo it elsewhere)
 
 The data model is designed so the **anonymization is enforced by the database
 itself** (Firestore Security Rules), not just hidden in the UI. A parent using
@@ -102,10 +114,13 @@ parent can't add themselves to another child.
 
 ### 2. Point the app at your project
 
-Replace the placeholder values in [`firebase-config.js`](firebase-config.js)
-with your real config. (Firebase web config values are not secrets — they ship
-to every browser; the security rules do the protecting. For a public repo,
-prefer a **private fork** or injecting the values at deploy time.)
+Put your Web App config into [`firebase-config.js`](firebase-config.js) (this
+repo already has the real `tuition-calendar-670e3` config committed). Firebase
+web config values are **not secrets** — they ship to every browser; the security
+rules do the protecting. GitHub may still flag the `apiKey` as a "secret" — that
+is a known **false positive** for Firebase web keys; dismiss it. As defence in
+depth, the key is restricted in Google Cloud to the GitHub Pages + localhost
+referrers and to Firebase APIs only, so it's useless from any other site.
 
 ### 3. Deploy rules, indexes, and the Cloud Function
 
@@ -113,7 +128,7 @@ Install the Firebase CLI and deploy. The repo already contains `firestore.rules`
 `firestore.indexes.json`, `firebase.json`, and the `functions/` folder.
 
 ```bash
-npm install -g firebase-tools      # one-time
+npm install -g firebase-tools      # one-time (needs Node; this Mac uses ~/.local/node)
 firebase login
 firebase use --add                 # select your project
 cd functions && npm install && cd ..
@@ -123,22 +138,42 @@ firebase deploy --only firestore:rules,firestore:indexes,functions
 The **Cloud Function** (`functions/index.js`) does exactly one privileged thing:
 `redeemInvite` links a parent to a student when they enter a valid invite code.
 This is the *only* code that may write `users/{uid}.studentIds` — clients can't,
-which is what stops a parent linking themselves to another child. (Deploying
-functions needs the Blaze plan, but usage at this scale stays within the free
-allowance. If you'd rather not deploy functions, you can do parent linking by
-hand in the console instead — see step 4's note.)
+which is what stops a parent linking themselves to another child. **Deploying
+functions requires the Blaze (pay-as-you-go) plan**, but usage at this scale
+stays within the free allowance.
 
-### 4. Make yourself the tutor (one console step)
+> ⚠️ **Gotcha — "Self-serve invite codes aren't enabled" after deploy.** A
+> Gen-2 callable function runs on Cloud Run, which blocks the browser's call at
+> its IAM gate *before* the function's own Firebase-Auth check runs. On a fresh
+> project you must grant the underlying Run service the `allUsers` invoker role
+> (Auth is still enforced inside the function). One-time fix:
+> ```bash
+> gcloud run services add-iam-policy-binding redeeminvite \
+>   --region=us-central1 --member=allUsers --role=roles/run.invoker \
+>   --project=tuition-calendar-670e3
+> ```
+> (Or do it via the Cloud Run console → the service → Permissions.)
 
-Just one thing must be set by hand, once:
+> Prefer not to deploy the Cloud Function (e.g. staying on the free Spark plan)?
+> Link parents by hand instead: in Firestore, add the student's id to that
+> parent's `users/{uid}.studentIds`. The app shows a friendly "your tutor will
+> connect your account" message when the function isn't deployed.
 
-- **`admins/{yourUid}`** — after you sign up / sign in once (Authentication →
-  Users shows your UID), create an empty doc at `admins/<your-uid>` in Firestore.
-  Its existence makes you the tutor.
+### 4. Enable Email/Password + make yourself the tutor
+
+Two things must be set by hand, once (the CLI can't initialize Auth):
+
+1. **Enable login** — Console → **Authentication → Get started → Sign-in method
+   → Email/Password → Enable**. (Until this is done, sign-in throws
+   `CONFIGURATION_NOT_FOUND`.)
+2. **Become the tutor** — sign up once in the app, find your UID
+   (Authentication → Users), then create an empty doc at `admins/<your-uid>` in
+   Firestore *and* a `users/<your-uid>` doc with `role: "tutor"`. Its existence
+   makes you the tutor.
 
 That's it. **Everything else is done from the app:**
 
-- Add students → **Manage → + Add student**
+- Add / remove students → **Manage → + Add student** / the **×** on a chip.
 - Onboard a parent → **Manage → ✉ Invite a parent** (gives you a code) → the
   parent signs up with their email and enters the code via **+ Connect child**.
 - Add / edit / cancel lessons → the **Calendar** tab.
@@ -193,7 +228,8 @@ js/
     components.js          shared render helpers (modal, toast, pills)
 tests/
   selftest.html            privacy/behaviour self-tests (22)
-  selftest2.html           tutor + onboarding self-tests (19)
+  selftest2.html           tutor + onboarding + remove-student self-tests (26)
+  selftest3.html           demo localStorage persistence self-tests (8)
   rendertest.html          time-grid structural render check
 ```
 
@@ -208,3 +244,11 @@ tests/
   re-verifies the target booking still belongs to the request's student.
 
 See the header comment in `firestore.rules` for the full rationale.
+
+> **Rules-are-not-filters note.** A list query is allowed only if its query
+> constraints alone prove every returned doc satisfies the read rule. So the
+> `requests` read rule is just `parentUid == uid()` (matching the client's
+> `where("parentUid","==",uid)` query) — adding an `isParentOf(studentId)` check
+> there would reject the whole query ("Missing or insufficient permissions").
+> Likewise, parents must query `lessons` with `where("studentId","in",
+> myStudentIds)`. Keep client queries and read rules aligned.
