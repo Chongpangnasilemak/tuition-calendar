@@ -271,6 +271,12 @@ export class MockProvider extends DataProvider {
     return this._viewer();
   }
 
+  // Demo can't do real Google OAuth; the login screen hides the button in demo.
+  supportsGoogle() { return false; }
+  async signInWithGoogle() {
+    throw new Error("Google sign-in isn't available in demo mode. Use a quick demo account or an email.");
+  }
+
   async signOut() {
     this._current = null;
     try {

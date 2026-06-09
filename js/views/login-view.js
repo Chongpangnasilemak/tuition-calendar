@@ -118,6 +118,26 @@ export class LoginView {
       const pass = el("input", { class: "field__input", type: "password", placeholder: "Password", autocomplete: isSignup ? "new-password" : "current-password" });
       const submit = el("button", { class: "btn btn--primary btn--block", type: "submit" }, isSignup ? "Create account" : "Sign in");
 
+      // "Continue with Google" (live mode only) — fastest path, no password.
+      if (this.provider.supportsGoogle && this.provider.supportsGoogle()) {
+        const gbtn = el("button", { class: "btn btn--google btn--block", type: "button" }, [
+          el("span", { class: "btn__gicon", "aria-hidden": "true" }, "G"),
+          "Continue with Google",
+        ]);
+        gbtn.addEventListener("click", async () => {
+          gbtn.disabled = true;
+          try {
+            await this.provider.signInWithGoogle();
+            // On success, onAuthChanged re-renders. On redirect, the page reloads.
+          } catch (err) {
+            gbtn.disabled = false;
+            toast(this._friendly(err), "error");
+          }
+        });
+        wrap.appendChild(gbtn);
+        wrap.appendChild(el("div", { class: "login__divider" }, "or with email"));
+      }
+
       const fields = [];
       if (isSignup) fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Name"), name]));
       fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Email"), email]));
@@ -162,6 +182,12 @@ export class LoginView {
     if (code.includes("user-not-found")) return "No account with that email — try Create an account.";
     if (code.includes("weak-password")) return "Password should be at least 6 characters.";
     if (code.includes("invalid-email")) return "That doesn't look like a valid email.";
+    if (code.includes("account-exists-with-different-credential"))
+      return "You already have an account with that email — sign in with your password instead.";
+    if (code.includes("unauthorized-domain"))
+      return "This site isn't authorized for Google sign-in yet (add it in Firebase Auth settings).";
+    if (code.includes("operation-not-allowed"))
+      return "Google sign-in isn't enabled on this project yet.";
     return (err && err.message) || "Sign-in failed.";
   }
 }

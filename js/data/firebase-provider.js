@@ -23,6 +23,10 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
@@ -64,6 +68,11 @@ export class FirebaseProvider extends DataProvider {
     this._auth = getAuth(this._app);
     this._db = getFirestore(this._app);
     this._functions = getFunctions(this._app);
+
+    // Complete any pending Google redirect sign-in from a previous page load.
+    // (onAuthStateChanged below also picks up the restored session; this just
+    // lets us swallow/observe redirect errors without crashing boot.)
+    try { await getRedirectResult(this._auth); } catch (_) {}
 
     // Keep a Viewer in sync with auth + the user's /users doc + /admins marker.
     onAuthStateChanged(this._auth, async (fbUser) => {
@@ -118,6 +127,37 @@ export class FirebaseProvider extends DataProvider {
     }
     this._viewer = await this._loadViewer(cred.user);
     return this._viewer;
+  }
+
+  supportsGoogle() { return true; }
+
+  /**
+   * Sign in with Google. Tries a popup; if the browser blocks it (common on
+   * mobile) falls back to a full-page redirect. After sign-in a brand-new Google
+   * user is just a parent with no children until they redeem an invite code —
+   * same post-login path as email sign-up (onAuthStateChanged -> _loadViewer).
+   */
+  async signInWithGoogle() {
+    const gp = new GoogleAuthProvider();
+    try {
+      const cred = await signInWithPopup(this._auth, gp);
+      this._viewer = await this._loadViewer(cred.user);
+      return this._viewer;
+    } catch (e) {
+      const code = (e && e.code) || "";
+      // Popup blocked / closed / unsupported -> use redirect. The result is
+      // picked up by getRedirectResult() on the next page load (see init()).
+      if (
+        code.includes("popup-blocked") ||
+        code.includes("popup-closed-by-user") ||
+        code.includes("cancelled-popup-request") ||
+        code.includes("operation-not-supported")
+      ) {
+        await signInWithRedirect(this._auth, gp);
+        return null; // page will redirect; resolved after the round-trip
+      }
+      throw e;
+    }
   }
 
   async signOut() {

@@ -145,6 +145,30 @@ h2 { font-size: 1.1rem; margin: 0; }
 .btn--block { width: 100%; }
 .btn--danger { background: transparent; border-color: var(--danger); color: var(--danger); margin-right: auto; }
 .btn--danger:hover { background: var(--danger); color: #fff; }
+.btn--google {
+  background: #fff;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+}
+.btn--google:hover { background: #f7f8f8; filter: none; }
+.btn__gicon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  font-weight: 800;
+  font-size: 0.8rem;
+  font-family: Arial, sans-serif;
+  /* Google four-color "G" approximated with a gradient ring */
+  background: conic-gradient(#ea4335 0 25%, #fbbc05 0 50%, #34a853 0 75%, #4285f4 0 100%);
+  color: #fff;
+}
 
 /* ----- week bar ----- */
 .week__bar {

@@ -73,6 +73,16 @@ export class DataProvider {
    */
   async signUp(email, password, displayName) { throw new Error("not implemented"); }
 
+  /**
+   * Sign in (or sign up) with Google. New users become parents with no children
+   * until they redeem an invite code. Live mode only — demo throws a friendly
+   * error. @returns {Promise<Viewer>}
+   */
+  async signInWithGoogle() { throw new Error("not implemented"); }
+
+  /** Whether this provider supports Google sign-in (true only in live mode). */
+  supportsGoogle() { return false; }
+
   async signOut() { throw new Error("not implemented"); }
 
   // ---- students the viewer may act for ----
