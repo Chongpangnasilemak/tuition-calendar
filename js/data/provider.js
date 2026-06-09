@@ -140,6 +140,14 @@ export class DataProvider {
   async addStudent(payload) { throw new Error("not implemented"); }
 
   /**
+   * Tutor only. Remove a student and all of their lessons/bookings, and unlink
+   * them from any parents. Pending invites for that student are removed too.
+   * @param {string} studentId
+   * @returns {Promise<{removedLessons:number}>}
+   */
+  async removeStudent(studentId) { throw new Error("not implemented"); }
+
+  /**
    * Tutor only. Create an invite that links a (future) parent account to a
    * student. The parent redeems the returned code to gain access. The parent
    * NEVER writes their own link — only this tutor-authored invite can.

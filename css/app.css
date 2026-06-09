@@ -508,6 +508,24 @@ textarea.field__input { resize: vertical; }
   font-weight: 600;
   font-size: 0.88rem;
 }
+.chip--removable { display: inline-flex; align-items: center; gap: 0.4rem; padding-right: 0.4rem; }
+.chip__x {
+  font: inherit;
+  line-height: 1;
+  font-size: 1rem;
+  cursor: pointer;
+  border: none;
+  background: var(--surface-2);
+  color: var(--muted);
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.chip__x:hover { background: var(--danger); color: #fff; }
+.chip__x:disabled { opacity: 0.5; cursor: default; }
 .invite__row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.4rem 0; }
 .invite__code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

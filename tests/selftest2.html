@@ -116,6 +116,26 @@
         );
         check("no foreign field leaked to new parent", foreignLeak.length === 0);
 
+        // ---- tutor removes a student (lessons gone + parent unlinked) ----
+        await p.signIn("tutor@demo.app", "demo");
+        let pBlockedRemove = false;
+        // parent can't remove students
+        await p.signIn("evan.parent@demo.app", "demo");
+        try { await p.removeStudent(newStu.id); } catch { pBlockedRemove = true; }
+        check("parent BLOCKED from removeStudent", pBlockedRemove);
+
+        await p.signIn("tutor@demo.app", "demo");
+        const rem = await p.removeStudent(newStu.id);
+        check("tutor removed student (lessons cleaned)", rem.removedLessons >= 1, `removed=${rem.removedLessons}`);
+        const rosterAfter = await p.listAllStudents();
+        check("student gone from roster", !rosterAfter.some((s) => s.id === newStu.id));
+        const tsched = await p.getWeekSchedule(mondayISO());
+        check("removed student's lessons gone", !tsched.lessons.some((l) => l.studentId === newStu.id));
+        // the previously-linked parent is unlinked
+        await p.signIn("evan.parent@demo.app", "demo");
+        const evanNow = await p.getCurrentUser();
+        check("parent unlinked from removed student", !evanNow.studentIds.includes(newStu.id));
+
         const summary = `${results.length - failed}/${results.length} passed`;
         document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
         document.title = failed === 0 ? "SELFTEST2_OK" : "SELFTEST2_FAIL";

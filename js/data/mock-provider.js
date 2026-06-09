@@ -505,6 +505,28 @@ export class MockProvider extends DataProvider {
     return { id, name: clean };
   }
 
+  async removeStudent(studentId) {
+    this._requireTutor();
+    if (!this._students[studentId]) throw new Error("Student not found.");
+    // Remove the student's lessons.
+    const before = this._lessons.length;
+    this._lessons = this._lessons.filter((l) => l.studentId !== studentId);
+    const removedLessons = before - this._lessons.length;
+    // Unlink from any parents.
+    for (const u of Object.values(this._users)) {
+      if (Array.isArray(u.studentIds) && u.studentIds.includes(studentId)) {
+        u.studentIds = u.studentIds.filter((s) => s !== studentId);
+      }
+    }
+    // Drop pending invites + requests for that student.
+    this._invites = this._invites.filter((i) => i.studentId !== studentId);
+    this._requests = this._requests.filter((r) => r.studentId !== studentId);
+    delete this._students[studentId];
+    this._save();
+    this._emit(); // a linked viewer's studentIds may have changed
+    return { removedLessons };
+  }
+
   async createInvite({ studentId, parentEmail, parentName }) {
     this._requireTutor();
     const student = this._students[studentId];

@@ -62,7 +62,7 @@ export class ManageView {
       this.body.appendChild(el("p", { class: "muted" }, "No students yet. Add your first one above."));
     } else {
       this.body.appendChild(
-        el("div", { class: "chips" }, students.map((s) => el("span", { class: "chip" }, s.name)))
+        el("div", { class: "chips" }, students.map((s) => this._studentChip(s)))
       );
     }
 
@@ -75,6 +75,27 @@ export class ManageView {
       for (const inv of invites) list.appendChild(this._inviteCard(inv));
       this.body.appendChild(list);
     }
+  }
+
+  _studentChip(s) {
+    const del = el(
+      "button",
+      { class: "chip__x", type: "button", title: `Remove ${s.name}`, "aria-label": `Remove ${s.name}` },
+      "×"
+    );
+    del.addEventListener("click", async () => {
+      if (!confirm(`Remove ${s.name}? This deletes their lessons and unlinks their parents. This can't be undone.`)) return;
+      del.disabled = true;
+      try {
+        const res = await this.provider.removeStudent(s.id);
+        toast(`Removed ${s.name}${res?.removedLessons ? ` and ${res.removedLessons} lesson(s)` : ""}.`, "success");
+        this._load();
+      } catch (e) {
+        del.disabled = false;
+        toast(e.message, "error");
+      }
+    });
+    return el("span", { class: "chip chip--removable" }, [s.name, del]);
   }
 
   _inviteCard(inv) {

@@ -450,6 +450,40 @@ export class FirebaseProvider extends DataProvider {
     return { id: ref.id, name: clean };
   }
 
+  async removeStudent(studentId) {
+    this._requireTutor();
+    const db = this._db;
+    // Find this student's lessons (to delete them + their public bookings).
+    const lessonSnap = await getDocs(
+      query(collection(db, "lessons"), where("studentId", "==", studentId))
+    );
+    // Find pending invites for this student.
+    const inviteSnap = await getDocs(
+      query(collection(db, "invites"), where("studentId", "==", studentId))
+    );
+
+    // Firestore batches cap at 500 ops; chunk to be safe.
+    const ops = [];
+    lessonSnap.docs.forEach((d) => {
+      ops.push(["lessons", d.id]);
+      ops.push(["bookings", d.id]); // same id, 1:1
+    });
+    inviteSnap.docs.forEach((d) => ops.push(["invites", d.id]));
+    ops.push(["students", studentId]);
+
+    for (let i = 0; i < ops.length; i += 450) {
+      const batch = writeBatch(db);
+      for (const [coll, id] of ops.slice(i, i + 450)) {
+        batch.delete(doc(db, coll, id));
+      }
+      await batch.commit();
+    }
+    // Note: parents' users/{uid}.studentIds is NOT client-writable (trust
+    // anchor), so a linked parent keeps a dangling id — harmless, since the
+    // student doc and lessons are gone. A console/admin step can prune it.
+    return { removedLessons: lessonSnap.size };
+  }
+
   async createInvite({ studentId, parentEmail, parentName }) {
     const v = this._requireTutor();
     const db = this._db;
