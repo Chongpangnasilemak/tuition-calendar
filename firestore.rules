@@ -97,10 +97,14 @@ service cloud.firestore {
     //      approval time (lessons/{bookingId}.studentId == request.studentId). ----
     match /requests/{requestId} {
 
+      // A parent reads their OWN requests. Filtering by parentUid == uid() is
+      // sufficient authority (the create rule already guaranteed the request was
+      // for this parent's own child). We intentionally do NOT also require
+      // isParentOf(studentId) here: rules are not filters, so a list query
+      // constrained only by parentUid must be provably safe on parentUid alone —
+      // adding the studentId check would reject the whole query.
       allow read: if isTutor()
-        || (isSignedIn()
-            && resource.data.parentUid == uid()
-            && isParentOf(resource.data.studentId));
+        || (isSignedIn() && resource.data.parentUid == uid());
 
       allow create: if isParentOf(request.resource.data.studentId)
         && request.resource.data.parentUid == uid()
