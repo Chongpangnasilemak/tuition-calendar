@@ -138,6 +138,21 @@ export class DataProvider {
   /** Tutor only. Cancel (delete) a lesson. @param {string} id */
   async cancelLesson(id) { throw new Error("not implemented"); }
 
+  /**
+   * Tutor only. Edit a recurring lesson across its series.
+   * @param {string} id @param {object} patch (sparse — changed fields only)
+   * @param {'one'|'future'|'all'} scope  'future' is inclusive of the clicked one
+   * @returns {Promise<import('./provider.js').Lesson>}
+   */
+  async updateLessonSeries(id, patch, scope) { throw new Error("not implemented"); }
+
+  /**
+   * Tutor only. Cancel a recurring lesson across its series.
+   * @param {string} id @param {'one'|'future'|'all'} scope
+   * @returns {Promise<{removed:number}>}
+   */
+  async cancelLessonSeries(id, scope) { throw new Error("not implemented"); }
+
   // ---- tutor: students & onboarding ----
   /** Tutor only. List ALL students (roster). @returns {Promise<StudentRef[]>} */
   async listAllStudents() { throw new Error("not implemented"); }

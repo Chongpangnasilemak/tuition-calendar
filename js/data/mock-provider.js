@@ -17,6 +17,7 @@
 
 import { DataProvider } from "./provider.js";
 import { projectLessonForViewer } from "./anonymize.js";
+import { expandRecurrence, wallClockShift, applyWallClockShift } from "./recurrence.js";
 import {
   USERS,
   STUDENTS,
@@ -434,25 +435,37 @@ export class MockProvider extends DataProvider {
   }
 
   // ---- tutor: lesson management ----
-  async addLesson({ studentId, startISO, endISO, subject, notes }) {
+  async addLesson({ studentId, startISO, endISO, subject, notes, recurrence }) {
     const v = this._requireTutor();
     const student = this._students[studentId];
     if (!student) throw new Error("Unknown student.");
     if (!startISO || !endISO || endISO <= startISO)
       throw new Error("Invalid lesson time range.");
-    const lesson = {
-      id: "bk-" + rid(),
-      studentId,
-      studentName: student.name,
-      subject: (subject || "Lesson").trim(),
-      notes: (notes || "").trim(),
-      startISO,
-      endISO,
-      status: "booked",
-    };
-    this._lessons.push(lesson);
+
+    const subj = (subject || "Lesson").trim();
+    const note = (notes || "").trim();
+    // Expand recurrence into concrete occurrences (single occurrence if none).
+    const occ = expandRecurrence(startISO, endISO, recurrence || null);
+    const seriesId = occ.length > 1 ? "ser-" + rid() : null;
+
+    let first = null;
+    for (const o of occ) {
+      const lesson = {
+        id: "bk-" + rid(),
+        studentId,
+        studentName: student.name,
+        subject: subj,
+        notes: note,
+        startISO: o.startISO,
+        endISO: o.endISO,
+        status: "booked",
+        ...(seriesId ? { seriesId } : {}),
+      };
+      this._lessons.push(lesson);
+      if (!first) first = lesson;
+    }
     this._save();
-    return projectLessonForViewer(lesson, v);
+    return projectLessonForViewer(first, v);
   }
 
   async updateLesson(id, patch = {}) {
@@ -488,6 +501,65 @@ export class MockProvider extends DataProvider {
     if (i === -1) throw new Error("Lesson not found.");
     this._lessons.splice(i, 1);
     this._save();
+  }
+
+  /** Members of a series, optionally only those at/after the clicked one (inclusive). */
+  _seriesMembers(clicked, scope) {
+    if (!clicked.seriesId) return [clicked];
+    let members = this._lessons.filter((l) => l.seriesId === clicked.seriesId);
+    if (scope === "future") {
+      members = members.filter((l) => l.startISO >= clicked.startISO);
+    }
+    return members;
+  }
+
+  /**
+   * Edit a lesson across a series. scope: 'one' | 'future' | 'all'.
+   * Time changes are applied as a WALL-CLOCK shift (DST-safe); subject/notes/
+   * student are applied absolutely. patch should be sparse (changed fields only).
+   */
+  async updateLessonSeries(id, patch = {}, scope = "one") {
+    const v = this._requireTutor();
+    const clicked = this._lessons.find((l) => l.id === id);
+    if (!clicked) throw new Error("Lesson not found.");
+    if (scope === "one" || !clicked.seriesId) return this.updateLesson(id, patch);
+
+    // Resolve a possible student change once.
+    let newStudentId, newStudentName;
+    if (patch.studentId && patch.studentId !== clicked.studentId) {
+      const s = this._students[patch.studentId];
+      if (!s) throw new Error("Unknown student.");
+      newStudentId = patch.studentId;
+      newStudentName = s.name;
+    }
+    // Wall-clock delta for a time move, derived from the clicked occurrence.
+    const startShift = patch.startISO ? wallClockShift(clicked.startISO, patch.startISO) : null;
+    const endShift = patch.endISO ? wallClockShift(clicked.endISO, patch.endISO) : null;
+
+    const members = this._seriesMembers(clicked, scope);
+    for (const l of members) {
+      if (newStudentId) { l.studentId = newStudentId; l.studentName = newStudentName; }
+      if (startShift) l.startISO = applyWallClockShift(l.startISO, startShift);
+      if (endShift) l.endISO = applyWallClockShift(l.endISO, endShift);
+      if (l.endISO <= l.startISO) throw new Error("End must be after start.");
+      if (patch.subject != null) l.subject = patch.subject.trim();
+      if (patch.notes != null) l.notes = patch.notes.trim();
+    }
+    this._save();
+    return projectLessonForViewer(this._lessons.find((l) => l.id === id) || clicked, v);
+  }
+
+  /** Cancel a lesson across a series. scope: 'one' | 'future' | 'all'. */
+  async cancelLessonSeries(id, scope = "one") {
+    this._requireTutor();
+    const clicked = this._lessons.find((l) => l.id === id);
+    if (!clicked) throw new Error("Lesson not found.");
+    if (scope === "one" || !clicked.seriesId) return this.cancelLesson(id);
+    const remove = new Set(this._seriesMembers(clicked, scope).map((l) => l.id));
+    const before = this._lessons.length;
+    this._lessons = this._lessons.filter((l) => !remove.has(l.id));
+    this._save();
+    return { removed: before - this._lessons.length };
   }
 
   // ---- tutor: students & onboarding ----

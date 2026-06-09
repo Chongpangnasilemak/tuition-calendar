@@ -453,6 +453,14 @@ h2 { font-size: 1.1rem; margin: 0; }
 .field__input:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 textarea.field__input { resize: vertical; }
 
+/* ----- recurrence + scope chooser ----- */
+.recur { margin-top: 0.25rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
+.recur__hint { font-size: 0.82rem; margin-top: 0.4rem; min-height: 1.1em; }
+.recur__note { font-size: 0.82rem; margin: 0.6rem 0 0; }
+.scope { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+.scope__btn { text-align: center; border: 1px solid var(--border); background: var(--surface-2); }
+.scope__btn:hover { border-color: var(--primary); }
+
 /* ----- modal ----- */
 .modal-backdrop {
   position: fixed;

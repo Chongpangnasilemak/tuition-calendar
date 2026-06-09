@@ -30,6 +30,10 @@ export function projectLessonForViewer(lesson, viewer) {
       studentName: lesson.studentName,
       subject: lesson.subject,
       notes: lesson.notes,
+      // seriesId is surfaced ONLY on detail views (drives the edit/cancel
+      // "this / following / all" chooser). It is NEVER added to the anonymous
+      // branch below, so a parent can't tell which busy-blocks recur together.
+      ...(lesson.seriesId ? { seriesId: lesson.seriesId } : {}),
     };
   }
 

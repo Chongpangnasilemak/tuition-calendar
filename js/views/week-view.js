@@ -26,6 +26,7 @@ import {
   localToISO,
 } from "../util.js";
 import { modal, toast } from "./components.js";
+import { describeRecurrence } from "../data/recurrence.js";
 
 // Grid bounds (local hours) and pixel scale.
 const DAY_START_H = 8; // 08:00
@@ -449,6 +450,7 @@ export class WeekView {
     const endISO = new Date(new Date(startISO).getTime() + 60 * 60000).toISOString();
 
     const form = this._timeForm({ defaultDateISO: startISO, defaultStart: startISO, defaultEnd: endISO });
+    const repeat = this._recurrenceControls(form);
     const submit = el("button", { class: "btn btn--primary", type: "button" }, "Add lesson");
 
     const { close } = modal(
@@ -457,6 +459,7 @@ export class WeekView {
         el("label", { class: "field" }, [el("span", { class: "field__label" }, "Student"), select]),
         el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
         form.node,
+        repeat.node,
       ],
       [submit]
     );
@@ -464,6 +467,8 @@ export class WeekView {
     submit.addEventListener("click", async () => {
       const vals = form.values();
       if (!vals) return;
+      const rec = repeat.value(vals); // null if "does not repeat", else recurrence obj
+      if (rec === false) return; // invalid recurrence (toast already shown)
       submit.disabled = true;
       try {
         await this.provider.addLesson({
@@ -472,15 +477,92 @@ export class WeekView {
           endISO: vals.endISO,
           subject: subject.value.trim(),
           notes: vals.note,
+          recurrence: rec,
         });
         close();
-        toast("Lesson added.", "success");
+        toast(rec ? "Recurring lessons added." : "Lesson added.", "success");
         this._loadWeek();
       } catch (e) {
         submit.disabled = false;
         toast(e.message, "error");
       }
     });
+  }
+
+  /**
+   * Build the Repeat + Ends controls with a live preview hint. Returns
+   * { node, value(vals) } where value() returns a recurrence object, null (no
+   * repeat), or false (invalid — a toast was shown).
+   */
+  _recurrenceControls(form) {
+    const freq = el("select", { class: "field__input" }, [
+      el("option", { value: "" }, "Does not repeat"),
+      el("option", { value: "daily" }, "Daily"),
+      el("option", { value: "weekly" }, "Weekly"),
+      el("option", { value: "biweekly" }, "Every 2 weeks"),
+    ]);
+    const endKind = el("select", { class: "field__input" }, [
+      el("option", { value: "count" }, "After N lessons"),
+      el("option", { value: "until" }, "On date"),
+    ]);
+    const count = el("input", { class: "field__input", type: "number", min: "1", max: "200", value: "8" });
+    const untilDate = el("input", { class: "field__input", type: "date" });
+    const hint = el("div", { class: "muted recur__hint" }, "");
+
+    const countField = el("label", { class: "field" }, [el("span", { class: "field__label" }, "Ends after"), count]);
+    const untilField = el("label", { class: "field" }, [el("span", { class: "field__label" }, "Ends on"), untilDate]);
+    const endRow = el("div", { class: "form__row" }, [
+      el("label", { class: "field" }, [el("span", { class: "field__label" }, "Ends"), endKind]),
+      countField,
+      untilField,
+    ]);
+
+    const build = (vals) => {
+      if (!freq.value) return null;
+      const end =
+        endKind.value === "until"
+          ? { kind: "until", dateISO: untilDate.value }
+          : { kind: "count", count: parseInt(count.value, 10) || 0 };
+      return { freq: freq.value, end };
+    };
+
+    const refresh = () => {
+      const repeats = !!freq.value;
+      endRow.style.display = repeats ? "" : "none";
+      countField.style.display = endKind.value === "count" ? "" : "none";
+      untilField.style.display = endKind.value === "until" ? "" : "none";
+      if (!repeats) { hint.textContent = ""; return; }
+      const vals = form.values(/*silent*/ true);
+      if (!vals) { hint.textContent = ""; return; }
+      hint.textContent = describeRecurrence(vals.startISO, vals.endISO, build(vals));
+    };
+    [freq, endKind, count, untilDate].forEach((c) => c.addEventListener("change", refresh));
+    untilDate.addEventListener("input", refresh);
+    count.addEventListener("input", refresh);
+    refresh();
+
+    const node = el("div", { class: "form recur" }, [
+      el("label", { class: "field" }, [el("span", { class: "field__label" }, "Repeat"), freq]),
+      endRow,
+      hint,
+    ]);
+
+    return {
+      node,
+      value(vals) {
+        const rec = build(vals);
+        if (!rec) return null;
+        if (rec.end.kind === "count" && !(rec.end.count >= 1)) {
+          toast("Enter how many lessons to repeat.", "error");
+          return false;
+        }
+        if (rec.end.kind === "until" && !untilDate.value) {
+          toast("Pick an end date.", "error");
+          return false;
+        }
+        return rec;
+      },
+    };
   }
 
   async _openEditLesson(lesson) {
@@ -502,31 +584,44 @@ export class WeekView {
       defaultEnd: lesson.endISO,
     });
 
+    const isSeries = !!lesson.seriesId;
     const save = el("button", { class: "btn btn--primary", type: "button" }, "Save changes");
     const cancelLesson = el("button", { class: "btn btn--danger", type: "button" }, "Cancel lesson");
 
-    const { close } = modal(
-      `Edit lesson — ${lesson.studentName}`,
-      [
-        el("label", { class: "field" }, [el("span", { class: "field__label" }, "Student"), select]),
-        el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
-        form.node,
-      ],
-      [cancelLesson, save]
-    );
+    const bodyNodes = [
+      el("label", { class: "field" }, [el("span", { class: "field__label" }, "Student"), select]),
+      el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
+      form.node,
+    ];
+    if (isSeries) {
+      bodyNodes.push(el("p", { class: "muted recur__note" }, "🔁 Part of a repeating series — you'll choose which lessons to change."));
+    }
+
+    const { close } = modal(`Edit lesson — ${lesson.studentName}`, bodyNodes, [cancelLesson, save]);
+
+    // Build a SPARSE patch: only fields the tutor actually changed. Avoids
+    // silently rewriting every occurrence's time when only the subject changed.
+    const sparsePatch = (vals) => {
+      const p = {};
+      if (select.value !== lesson.studentId) p.studentId = select.value;
+      if (vals.startISO !== lesson.startISO) p.startISO = vals.startISO;
+      if (vals.endISO !== lesson.endISO) p.endISO = vals.endISO;
+      if (subject.value.trim() !== (lesson.subject || "")) p.subject = subject.value.trim();
+      if ((vals.note || "") !== (lesson.notes || "")) p.notes = vals.note;
+      return p;
+    };
 
     save.addEventListener("click", async () => {
       const vals = form.values();
       if (!vals) return;
+      const patch = sparsePatch(vals);
+      if (Object.keys(patch).length === 0) { close(); return; } // nothing changed
+      const scope = isSeries ? await this._chooseScope("change") : "one";
+      if (!scope) return; // cancelled the chooser
       save.disabled = cancelLesson.disabled = true;
       try {
-        await this.provider.updateLesson(lesson.id, {
-          studentId: select.value,
-          startISO: vals.startISO,
-          endISO: vals.endISO,
-          subject: subject.value.trim(),
-          notes: vals.note,
-        });
+        if (scope === "one") await this.provider.updateLesson(lesson.id, patch);
+        else await this.provider.updateLessonSeries(lesson.id, patch, scope);
         close();
         toast("Lesson updated.", "success");
         this._loadWeek();
@@ -537,16 +632,60 @@ export class WeekView {
     });
 
     cancelLesson.addEventListener("click", async () => {
-      if (!confirm(`Cancel ${lesson.studentName}'s lesson? This removes it from the calendar.`)) return;
+      const scope = isSeries ? await this._chooseScope("cancel") : "one";
+      if (isSeries) {
+        if (!scope) return;
+      } else if (!confirm(`Cancel ${lesson.studentName}'s lesson? This removes it from the calendar.`)) {
+        return;
+      }
       save.disabled = cancelLesson.disabled = true;
       try {
-        await this.provider.cancelLesson(lesson.id);
+        if (scope === "one") await this.provider.cancelLesson(lesson.id);
+        else await this.provider.cancelLessonSeries(lesson.id, scope);
         close();
         toast("Lesson cancelled.", "success");
         this._loadWeek();
       } catch (e) {
         save.disabled = cancelLesson.disabled = false;
         toast(e.message, "error");
+      }
+    });
+  }
+
+  /**
+   * Ask which occurrences a series edit/cancel applies to.
+   * @param {'change'|'cancel'} verb
+   * @returns {Promise<'one'|'future'|'all'|null>} null if dismissed
+   */
+  _chooseScope(verb) {
+    return new Promise((resolve) => {
+      let done = false;
+      const pick = (s, close) => { done = true; close(); resolve(s); };
+      const mk = (label, scope) => {
+        const b = el("button", { class: "btn btn--block scope__btn", type: "button" }, label);
+        b.addEventListener("click", () => pick(scope, close));
+        return b;
+      };
+      const titleVerb = verb === "cancel" ? "Cancel" : "Change";
+      const { close } = modal(
+        `${titleVerb} repeating lesson`,
+        [
+          el("p", { class: "muted" }, `Which lessons should this ${verb === "cancel" ? "cancellation" : "change"} apply to?`),
+          el("div", { class: "scope" }, [
+            mk("This lesson only", "one"),
+            mk("This and following lessons", "future"),
+            mk("All lessons in the series", "all"),
+          ]),
+        ],
+        []
+      );
+      // If the user closes the dialog (× / backdrop) without choosing, resolve null.
+      const root = document.querySelector(".modal-backdrop:last-of-type");
+      if (root) {
+        const obs = new MutationObserver(() => {
+          if (!document.body.contains(root) && !done) { obs.disconnect(); resolve(null); }
+        });
+        obs.observe(document.body, { childList: true, subtree: true });
       }
     });
   }
@@ -573,13 +712,13 @@ export class WeekView {
 
     return {
       node,
-      values() {
+      values(silent = false) {
         if (!date.value || !start.value || !end.value) {
-          toast("Please fill in date, start and end times.", "error");
+          if (!silent) toast("Please fill in date, start and end times.", "error");
           return null;
         }
         if (end.value <= start.value) {
-          toast("End time must be after start time.", "error");
+          if (!silent) toast("End time must be after start time.", "error");
           return null;
         }
         return {

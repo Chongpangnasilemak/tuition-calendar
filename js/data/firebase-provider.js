@@ -51,6 +51,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-functions.js";
 
 import { DataProvider } from "./provider.js";
+import { expandRecurrence, wallClockShift, applyWallClockShift } from "./recurrence.js";
 
 export class FirebaseProvider extends DataProvider {
   constructor(config) {
@@ -264,6 +265,9 @@ export class FirebaseProvider extends DataProvider {
       studentName: data.studentName,
       subject: data.subject,
       notes: data.notes,
+      // seriesId only on the detail object (drives the edit/cancel chooser);
+      // bookings never carry it, so anonymous parent blocks can't reveal a series.
+      ...(data.seriesId ? { seriesId: data.seriesId } : {}),
       _status: data.status || "booked",
     };
   }
@@ -389,7 +393,7 @@ export class FirebaseProvider extends DataProvider {
   }
 
   // ---- tutor: lesson management ----
-  async addLesson({ studentId, startISO, endISO, subject, notes }) {
+  async addLesson({ studentId, startISO, endISO, subject, notes, recurrence }) {
     const v = this._requireTutor();
     const db = this._db;
     const s = await getDoc(doc(db, "students", studentId));
@@ -397,30 +401,43 @@ export class FirebaseProvider extends DataProvider {
     if (!startISO || !endISO || endISO <= startISO)
       throw new Error("Invalid lesson time range.");
 
-    const id = doc(collection(db, "bookings")).id; // opaque shared id
-    const start = Timestamp.fromDate(new Date(startISO));
-    const end = Timestamp.fromDate(new Date(endISO));
+    const studentName = s.data().name;
+    const subj = (subject || "Lesson").trim();
+    const note = (notes || "").trim();
+    const occ = expandRecurrence(startISO, endISO, recurrence || null);
+    const seriesId = occ.length > 1 ? "ser-" + doc(collection(db, "lessons")).id : null;
+
+    // One booking (public, time only — NEVER seriesId) + one lesson (private,
+    // carries seriesId) per occurrence, sharing an opaque id. Batched (<450 ops).
     const batch = writeBatch(db);
-    batch.set(doc(db, "bookings", id), {
-      start, end,
-      durationMins: Math.round((end.toMillis() - start.toMillis()) / 60000),
-      status: "booked",
-      kind: "lesson",
-    });
-    batch.set(doc(db, "lessons", id), {
-      bookingId: id,
-      studentId,
-      studentName: s.data().name,
-      subject: (subject || "Lesson").trim(),
-      notes: (notes || "").trim(),
-      start, end,
-      status: "booked",
-    });
+    let firstId = null;
+    for (const o of occ) {
+      const id = doc(collection(db, "bookings")).id;
+      if (!firstId) firstId = id;
+      const start = Timestamp.fromDate(new Date(o.startISO));
+      const end = Timestamp.fromDate(new Date(o.endISO));
+      batch.set(doc(db, "bookings", id), {
+        start, end,
+        durationMins: Math.round((end.toMillis() - start.toMillis()) / 60000),
+        status: "booked",
+        kind: "lesson",
+      });
+      batch.set(doc(db, "lessons", id), {
+        bookingId: id,
+        studentId,
+        studentName,
+        subject: subj,
+        notes: note,
+        start, end,
+        status: "booked",
+        ...(seriesId ? { seriesId } : {}),
+      });
+    }
     await batch.commit();
     return {
-      id, startISO, endISO, anonymous: false, mine: false,
-      studentId, studentName: s.data().name, subject: (subject || "Lesson").trim(),
-      notes: (notes || "").trim(),
+      id: firstId, startISO: occ[0].startISO, endISO: occ[0].endISO,
+      anonymous: false, mine: false, studentId, studentName, subject: subj, notes: note,
+      ...(seriesId ? { seriesId } : {}),
     };
   }
 
@@ -467,6 +484,91 @@ export class FirebaseProvider extends DataProvider {
     batch.delete(doc(db, "lessons", id));
     batch.delete(doc(db, "bookings", id));
     await batch.commit();
+  }
+
+  /** Resolve the lesson docs in a series (optionally from the clicked one onward). */
+  async _seriesLessonDocs(clickedLesson, scope) {
+    const db = this._db;
+    if (!clickedLesson.seriesId || scope === "one") return null; // caller handles single
+    // Composite index (seriesId, start) required — see firestore.indexes.json.
+    let q;
+    if (scope === "future") {
+      q = query(
+        collection(db, "lessons"),
+        where("seriesId", "==", clickedLesson.seriesId),
+        where("start", ">=", clickedLesson.start)
+      );
+    } else {
+      q = query(collection(db, "lessons"), where("seriesId", "==", clickedLesson.seriesId));
+    }
+    const snap = await getDocs(q);
+    return snap.docs;
+  }
+
+  async updateLessonSeries(id, patch = {}, scope = "one") {
+    this._requireTutor();
+    const db = this._db;
+    const clickedSnap = await getDoc(doc(db, "lessons", id));
+    if (!clickedSnap.exists()) throw new Error("Lesson not found.");
+    const clicked = clickedSnap.data();
+    if (scope === "one" || !clicked.seriesId) return this.updateLesson(id, patch);
+
+    // Resolve student change + wall-clock time shifts from the clicked occurrence.
+    let studentField = null;
+    if (patch.studentId && patch.studentId !== clicked.studentId) {
+      const s = await getDoc(doc(db, "students", patch.studentId));
+      if (!s.exists()) throw new Error("Unknown student.");
+      studentField = { studentId: patch.studentId, studentName: s.data().name };
+    }
+    const startShift = patch.startISO ? wallClockShift(tsToISO(clicked.start), patch.startISO) : null;
+    const endShift = patch.endISO ? wallClockShift(tsToISO(clicked.end), patch.endISO) : null;
+
+    const docs = await this._seriesLessonDocs(clicked, scope);
+    const batch = writeBatch(db);
+    for (const d of docs) {
+      const data = d.data();
+      const lessonPatch = {};
+      const bookingPatch = {};
+      if (studentField) Object.assign(lessonPatch, studentField);
+      if (startShift) {
+        const t = Timestamp.fromDate(new Date(applyWallClockShift(tsToISO(data.start), startShift)));
+        lessonPatch.start = t; bookingPatch.start = t;
+      }
+      if (endShift) {
+        const t = Timestamp.fromDate(new Date(applyWallClockShift(tsToISO(data.end), endShift)));
+        lessonPatch.end = t; bookingPatch.end = t;
+      }
+      if (patch.subject != null) lessonPatch.subject = patch.subject.trim();
+      if (patch.notes != null) lessonPatch.notes = patch.notes.trim();
+      if (Object.keys(lessonPatch).length) batch.update(doc(db, "lessons", d.id), lessonPatch);
+      if (Object.keys(bookingPatch).length) batch.update(doc(db, "bookings", d.id), bookingPatch);
+    }
+    await batch.commit();
+    const after = await getDoc(doc(db, "lessons", id));
+    return this._lessonFull(id, after.exists() ? after.data() : clicked, false);
+  }
+
+  async cancelLessonSeries(id, scope = "one") {
+    this._requireTutor();
+    const db = this._db;
+    const clickedSnap = await getDoc(doc(db, "lessons", id));
+    if (!clickedSnap.exists()) throw new Error("Lesson not found.");
+    const clicked = clickedSnap.data();
+    if (scope === "one" || !clicked.seriesId) { await this.cancelLesson(id); return { removed: 1 }; }
+
+    const docs = await this._seriesLessonDocs(clicked, scope);
+    let removed = 0;
+    // Each occurrence = 2 deletes; chunk to stay under the 500-op batch cap.
+    for (let i = 0; i < docs.length; i += 200) {
+      const batch = writeBatch(db);
+      for (const d of docs.slice(i, i + 200)) {
+        batch.delete(doc(db, "lessons", d.id));
+        batch.delete(doc(db, "bookings", d.id));
+        removed++;
+      }
+      await batch.commit();
+    }
+    return { removed };
   }
 
   // ---- tutor: students & onboarding ----

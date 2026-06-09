@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Tuition Calendar — recurrence self-test</title></head>
+  <body>
+    <h1>Self-test 4 (recurring lessons)</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      import { MockProvider } from "../js/data/mock-provider.js";
+      import { projectLessonForViewer } from "../js/data/anonymize.js";
+      import { expandRecurrence, describeRecurrence } from "../js/data/recurrence.js";
+
+      const results = [];
+      let failed = 0;
+      const check = (n, c, d = "") => { results.push(`${c ? "PASS" : "FAIL"}  ${n}${d ? "  — " + d : ""}`); if (!c) failed++; };
+
+      function run() {
+        // localStorage clean for determinism
+        try { localStorage.removeItem("tuition_demo_state_v1"); localStorage.removeItem("tuition_demo_last_user"); } catch (_) {}
+
+        // ---- pure generator: count end ----
+        const wk = (() => { const d = new Date(); const day=(d.getDay()+6)%7; d.setHours(16,0,0,0); d.setDate(d.getDate()-day); return d; })();
+        const s = wk.toISOString();
+        const e = new Date(wk.getTime() + 60*60000).toISOString();
+        const weekly8 = expandRecurrence(s, e, { freq:"weekly", end:{kind:"count",count:8} });
+        check("weekly count=8 -> 8 occurrences", weekly8.length === 8, `${weekly8.length}`);
+        // each 7 days apart, same local hour (DST-safe)
+        const allSameHour = weekly8.every(o => new Date(o.startISO).getHours() === wk.getHours());
+        check("all occurrences keep the same local hour (DST-safe)", allSameHour);
+
+        // ---- until end ----
+        const until = new Date(wk.getTime() + 21*24*60*60000); // 3 weeks out
+        const untilStr = `${until.getFullYear()}-${String(until.getMonth()+1).padStart(2,"0")}-${String(until.getDate()).padStart(2,"0")}`;
+        const wkUntil = expandRecurrence(s, e, { freq:"weekly", end:{kind:"until",dateISO:untilStr} });
+        check("weekly until ~3wks -> 4 occurrences", wkUntil.length === 4, `${wkUntil.length}`);
+
+        // ---- MAX guard ----
+        let capped = expandRecurrence(s, e, { freq:"daily", end:{kind:"count",count:9999} });
+        check("daily count=9999 capped at 200", capped.length === 200, `${capped.length}`);
+
+        // ---- describeRecurrence ----
+        check("describe mentions count", /8 lessons/.test(describeRecurrence(s, e, { freq:"weekly", end:{kind:"count",count:8} })));
+        check("describe 'Does not repeat' when null", describeRecurrence(s, e, null) === "Does not repeat");
+
+        return Promise.resolve();
+      }
+
+      async function run2() {
+        const p = new MockProvider(); await p.init();
+        await p.signIn("tutor@demo.app", "demo");
+        const sid = (await p.listAllStudents())[0].id;
+        const wk = (() => { const d = new Date(); const day=(d.getDay()+6)%7; d.setHours(15,0,0,0); d.setDate(d.getDate()-day); return d; })();
+        const s = wk.toISOString();
+        const e = new Date(wk.getTime() + 60*60000).toISOString();
+
+        // ---- addLesson recurring (weekly x4) ----
+        const first = await p.addLesson({ studentId: sid, startISO: s, endISO: e, subject: "Recur", recurrence: { freq:"weekly", end:{kind:"count",count:4} } });
+        check("addLesson recurring returns a seriesId", !!first.seriesId, first.seriesId || "(none)");
+        const allLessons = p._lessons.filter(l => l.seriesId === first.seriesId);
+        check("4 lessons created in the series", allLessons.length === 4, `${allLessons.length}`);
+
+        // ---- seriesId NEVER leaks to an anonymous parent block ----
+        const otherStudent = { role:"parent", studentIds:["__none__"] };
+        const anon = projectLessonForViewer(allLessons[0], otherStudent);
+        check("anonymous block has no seriesId", anon.anonymous === true && !("seriesId" in anon), JSON.stringify(anon));
+        // tutor/own view DOES carry seriesId (drives chooser)
+        const ownView = projectLessonForViewer(allLessons[0], { role:"tutor", studentIds:[] });
+        check("tutor detail view carries seriesId", !!ownView.seriesId);
+
+        // ---- edit scope: 'one' only changes the clicked occurrence ----
+        const sorted = allLessons.slice().sort((a,b)=>a.startISO.localeCompare(b.startISO));
+        await p.updateLessonSeries(sorted[1].id, { subject: "ChangedOne" }, "one");
+        const reloaded = () => p._lessons.filter(l => l.seriesId === first.seriesId).slice().sort((a,b)=>a.startISO.localeCompare(b.startISO));
+        check("scope 'one' changed only that lesson", reloaded().filter(l=>l.subject==="ChangedOne").length === 1);
+
+        // ---- edit scope: 'future' (inclusive) ----
+        await p.updateLessonSeries(sorted[2].id, { subject: "FromHere" }, "future");
+        const r2 = reloaded();
+        check("scope 'future' inclusive of clicked", r2[2].subject === "FromHere" && r2[3].subject === "FromHere");
+        check("scope 'future' left earlier ones alone", r2[0].subject !== "FromHere");
+
+        // ---- time edit across series is wall-clock (same hour preserved) ----
+        const clicked0 = reloaded()[0]; // current stored state of the first occurrence
+        const before0 = clicked0.startISO;
+        const newStart0 = new Date(new Date(clicked0.startISO).getTime()+30*60000).toISOString();
+        await p.updateLessonSeries(clicked0.id, { startISO: newStart0 }, "all");
+        const r3 = reloaded();
+        const mins = new Set(r3.map(l => new Date(l.startISO).getMinutes()));
+        const after0 = r3[0].startISO;
+        check("time shift applied to all occurrences (same minute)", mins.size === 1 && after0 !== before0,
+              `minutes=${[...mins].join(",")} before0=${before0} after0=${after0}`);
+
+        // ---- cancel scope 'future' ----
+        const beforeCount = reloaded().length;
+        const cancelFrom = reloaded()[2];
+        const res = await p.cancelLessonSeries(cancelFrom.id, "future");
+        check("cancel 'future' removed clicked + later", res.removed === beforeCount - 2, `removed=${res.removed}`);
+        check("series now has 2 left", reloaded().length === 2);
+
+        // ---- non-recurring add still works (no seriesId) ----
+        const single = await p.addLesson({ studentId: sid, startISO: s, endISO: e, subject: "Single" });
+        check("single add has no seriesId", !single.seriesId);
+
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST4_OK" : "SELFTEST4_FAIL";
+      }
+
+      run().then(run2).catch(e => { document.getElementById("out").textContent = "ERROR: " + e.stack; document.title = "SELFTEST4_FAIL"; });
+    </script>
+  </body>
+</html>
