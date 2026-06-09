@@ -65,6 +65,14 @@ export class DataProvider {
   /** @param {string} email @param {string} password @returns {Promise<Viewer>} */
   async signIn(email, password) { throw new Error("not implemented"); }
 
+  /**
+   * Create a new PARENT account, then sign in. New parents use this, then
+   * redeem an invite code to connect to their child.
+   * @param {string} email @param {string} password @param {string} [displayName]
+   * @returns {Promise<Viewer>}
+   */
+  async signUp(email, password, displayName) { throw new Error("not implemented"); }
+
   async signOut() { throw new Error("not implemented"); }
 
   // ---- students the viewer may act for ----

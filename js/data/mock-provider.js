@@ -129,6 +129,30 @@ export class MockProvider extends DataProvider {
     return this._viewer();
   }
 
+  /** Demo sign-up: create a new parent account (no children yet) and sign in. */
+  async signUp(email, password, displayName) {
+    const clean = (email || "").trim().toLowerCase();
+    if (!clean) throw new Error("Email is required.");
+    if (this._userByEmail(clean)) {
+      // Already exists in demo — just sign in.
+      return this.signIn(clean, password);
+    }
+    const uid = "parent-" + rid();
+    this._users[uid] = {
+      uid,
+      role: "parent",
+      email: clean,
+      displayName: (displayName || "").trim() || clean,
+      studentIds: [],
+    };
+    this._current = uid;
+    try {
+      localStorage.setItem(LAST_USER_KEY, uid);
+    } catch (_) {}
+    this._emit();
+    return this._viewer();
+  }
+
   async signOut() {
     this._current = null;
     try {

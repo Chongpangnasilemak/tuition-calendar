@@ -76,6 +76,12 @@
         const invites = await p.listInvites();
         check("invite appears in list", invites.some((i) => i.code === inv.code));
 
+        // ---- a brand-new parent can SIGN UP (not pre-seeded, no invite yet) ----
+        const fresh = await p.signUp("brand.new@demo.app", "pw", "Brand New");
+        check("brand-new parent can sign up", fresh.role === "parent");
+        check("signed-up parent has no children", fresh.studentIds.length === 0);
+        await p.signOut();
+
         // ---- parent signs up via invited email (auto-created) and redeems ----
         const parent = await p.signIn("evan.parent@demo.app", "demo");
         check("invited parent can sign in", parent.role === "parent");

@@ -354,6 +354,50 @@ h2 { font-size: 1.1rem; margin: 0; }
 .account__name { font-weight: 700; }
 .account__email { font-size: 0.8rem; }
 .accounts__hint { margin: 0.5rem 0 0; font-size: 0.82rem; }
+.accounts__label { margin: 0 0 0.4rem; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.login__divider {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 1.1rem 0 0.9rem;
+  position: relative;
+}
+.login__divider::before, .login__divider::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 28%;
+  border-top: 1px solid var(--border);
+}
+.login__divider::before { left: 0; }
+.login__divider::after { right: 0; }
+.login__toggle { text-align: center; margin: 0.8rem 0 0; }
+.linkbtn {
+  background: none;
+  border: none;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}
+.linkbtn:hover { color: var(--primary-d); }
+
+/* ----- empty state ----- */
+.empty-state {
+  max-width: 480px;
+  margin: 8vh auto 0;
+  text-align: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 2rem 1.75rem;
+  box-shadow: var(--shadow);
+}
+.empty-state__icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+.empty-state h1 { font-size: 1.3rem; }
+.empty-state p { margin: 0.4rem 0 1.2rem; }
 
 /* ----- forms ----- */
 .form { display: flex; flex-direction: column; gap: 0.7rem; }

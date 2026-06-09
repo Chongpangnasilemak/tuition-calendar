@@ -1,7 +1,9 @@
 // Login view.
-//   - In DEMO mode: shows clickable demo accounts (tutor + parents) so anyone
-//     can explore both sides instantly. Password is ignored.
-//   - In LIVE mode: a plain email + password form (Firebase Auth).
+//   - DEMO mode: quick-access demo account buttons (instant explore) PLUS an
+//     email box so an invited/new parent can sign in or sign up by email.
+//   - LIVE mode: an email + password form with a Sign in / Create account
+//     toggle, so a brand-new parent can create their account, then connect to
+//     their child with the invite code their tutor gave them.
 
 import { el, clear } from "../util.js";
 import { toast } from "./components.js";
@@ -16,6 +18,7 @@ export class LoginView {
     this.mount = mount;
     this.provider = provider;
     this.mode = mode;
+    this.signupMode = false; // live: toggle between sign in / create account
   }
 
   async render() {
@@ -26,15 +29,17 @@ export class LoginView {
         "p",
         { class: "muted login__sub" },
         this.mode === "demo"
-          ? "Demo mode — pick an account to explore. No data is saved."
-          : "Sign in to view your child's schedule."
+          ? "Demo mode — explore as anyone. No data is saved."
+          : "Sign in, or create an account and connect to your child with your invite code."
       ),
     ]);
 
     if (this.mode === "demo") {
       card.appendChild(await this._demoAccounts());
+      card.appendChild(el("div", { class: "login__divider" }, "or sign in with email"));
+      card.appendChild(this._emailForm());
     } else {
-      card.appendChild(this._loginForm());
+      card.appendChild(this._liveForm());
     }
     this.mount.appendChild(card);
   }
@@ -45,6 +50,7 @@ export class LoginView {
         ? this.provider.demoAccounts()
         : [];
     const wrap = el("div", { class: "accounts" });
+    wrap.appendChild(el("p", { class: "accounts__label muted" }, "Quick demo accounts"));
     for (const a of accounts) {
       const btn = el(
         "button",
@@ -64,38 +70,98 @@ export class LoginView {
       });
       wrap.appendChild(btn);
     }
-    wrap.appendChild(
-      el("p", { class: "muted accounts__hint" }, [
-        "Sign in as the ",
-        el("strong", {}, "tutor"),
-        " to approve requests, or as a ",
-        el("strong", {}, "parent"),
-        " to see only your child plus anonymous busy-blocks.",
-      ])
-    );
     return wrap;
   }
 
-  _loginForm() {
+  /** DEMO: email box that signs in if the account exists, else creates a parent. */
+  _emailForm() {
     const email = el("input", { class: "field__input", type: "email", placeholder: "you@example.com", autocomplete: "username" });
-    const pass = el("input", { class: "field__input", type: "password", placeholder: "Password", autocomplete: "current-password" });
-    const submit = el("button", { class: "btn btn--primary btn--block", type: "submit" }, "Sign in");
+    const submit = el("button", { class: "btn btn--primary btn--block", type: "submit" }, "Sign in / Sign up");
 
     const form = el("form", { class: "form" }, [
       el("label", { class: "field" }, [el("span", { class: "field__label" }, "Email"), email]),
-      el("label", { class: "field" }, [el("span", { class: "field__label" }, "Password"), pass]),
       submit,
     ]);
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      const v = email.value.trim();
+      if (!v) {
+        toast("Enter your email.", "error");
+        return;
+      }
       submit.disabled = true;
       try {
-        await this.provider.signIn(email.value, pass.value);
+        // In demo, signUp signs in if the account already exists, else creates a
+        // new parent. (Tutor uses the quick button above.)
+        await this.provider.signUp(v, "demo");
       } catch (err) {
-        toast(err.message || "Sign-in failed.", "error");
+        toast(err.message || "Could not sign in.", "error");
         submit.disabled = false;
       }
     });
+    form.appendChild(
+      el("p", { class: "muted accounts__hint" },
+        "New parent? Enter the email your tutor invited, then use “+ Connect child” with your code.")
+    );
     return form;
+  }
+
+  /** LIVE: email + password with a Sign in / Create account toggle. */
+  _liveForm() {
+    const wrap = el("div", {});
+
+    const renderForm = () => {
+      clear(wrap);
+      const isSignup = this.signupMode;
+      const name = el("input", { class: "field__input", type: "text", placeholder: "Your name", autocomplete: "name" });
+      const email = el("input", { class: "field__input", type: "email", placeholder: "you@example.com", autocomplete: "username" });
+      const pass = el("input", { class: "field__input", type: "password", placeholder: "Password", autocomplete: isSignup ? "new-password" : "current-password" });
+      const submit = el("button", { class: "btn btn--primary btn--block", type: "submit" }, isSignup ? "Create account" : "Sign in");
+
+      const fields = [];
+      if (isSignup) fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Name"), name]));
+      fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Email"), email]));
+      fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Password"), pass]));
+      fields.push(submit);
+
+      const form = el("form", { class: "form" }, fields);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (!email.value.trim() || !pass.value) {
+          toast("Enter your email and password.", "error");
+          return;
+        }
+        submit.disabled = true;
+        try {
+          if (isSignup) await this.provider.signUp(email.value.trim(), pass.value, name.value.trim());
+          else await this.provider.signIn(email.value.trim(), pass.value);
+        } catch (err) {
+          toast(this._friendly(err), "error");
+          submit.disabled = false;
+        }
+      });
+      wrap.appendChild(form);
+
+      const toggle = el("button", { class: "linkbtn", type: "button" },
+        isSignup ? "Already have an account? Sign in" : "New parent? Create an account");
+      toggle.addEventListener("click", () => {
+        this.signupMode = !this.signupMode;
+        renderForm();
+      });
+      wrap.appendChild(el("p", { class: "login__toggle" }, toggle));
+    };
+
+    renderForm();
+    return wrap;
+  }
+
+  _friendly(err) {
+    const code = (err && err.code) || "";
+    if (code.includes("email-already-in-use")) return "That email already has an account — try Sign in.";
+    if (code.includes("invalid-credential") || code.includes("wrong-password")) return "Wrong email or password.";
+    if (code.includes("user-not-found")) return "No account with that email — try Create an account.";
+    if (code.includes("weak-password")) return "Password should be at least 6 characters.";
+    if (code.includes("invalid-email")) return "That doesn't look like a valid email.";
+    return (err && err.message) || "Sign-in failed.";
   }
 }

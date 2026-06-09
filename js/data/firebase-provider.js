@@ -21,6 +21,8 @@ import {
   getAuth,
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
@@ -100,6 +102,20 @@ export class FirebaseProvider extends DataProvider {
 
   async signIn(email, password) {
     const cred = await signInWithEmailAndPassword(this._auth, email, password);
+    this._viewer = await this._loadViewer(cred.user);
+    return this._viewer;
+  }
+
+  /**
+   * Create a new parent account. The /users doc is created lazily on first
+   * invite redemption (by the Cloud Function), so a fresh account simply has no
+   * linked children until they redeem a code.
+   */
+  async signUp(email, password, displayName) {
+    const cred = await createUserWithEmailAndPassword(this._auth, email, password);
+    if (displayName && displayName.trim()) {
+      try { await updateProfile(cred.user, { displayName: displayName.trim() }); } catch (_) {}
+    }
     this._viewer = await this._loadViewer(cred.user);
     return this._viewer;
   }

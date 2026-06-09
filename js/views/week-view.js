@@ -51,6 +51,26 @@ export class WeekView {
     clear(this.mount);
     const isParent = this.viewer.role === "parent";
 
+    // A parent with no child linked yet: prompt them to connect rather than show
+    // a confusing grid of anonymous busy-blocks.
+    if (isParent && (!this.viewer.studentIds || this.viewer.studentIds.length === 0)) {
+      this.mount.appendChild(
+        el("div", { class: "empty-state" }, [
+          el("div", { class: "empty-state__icon" }, "🔗"),
+          el("h1", {}, "Connect to your child"),
+          el("p", { class: "muted" }, "You're signed in, but not linked to a student yet. Use the invite code your tutor gave you."),
+          el("button", { class: "btn btn--primary", type: "button", onClick: () => {
+            const btn = document.querySelector('.topbar__right button');
+            // Open the redeem dialog via the header button if present.
+            const connect = [...document.querySelectorAll(".topbar__right button")]
+              .find((b) => b.textContent.includes("Connect"));
+            if (connect) connect.click();
+          } }, "+ Connect child"),
+        ])
+      );
+      return;
+    }
+
     const header = el("div", { class: "week__bar" }, [
       el("div", { class: "week__nav" }, [
         el("button", { class: "btn btn--ghost btn--sm", type: "button", onClick: () => this._shift(-7) }, "←"),
