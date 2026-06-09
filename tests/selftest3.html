@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tuition Calendar — persistence self-test</title>
+  </head>
+  <body>
+    <h1>Self-test 3 (persistence / the invite bug)</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      // Proves the reported bug is fixed: an invite created in one "page load"
+      // is still redeemable in a SECOND, fresh provider instance (simulating a
+      // reload / a parent opening the app later in the same browser).
+      import { MockProvider } from "../js/data/mock-provider.js";
+
+      const results = [];
+      let failed = 0;
+      function check(name, cond, detail = "") {
+        results.push(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? "  — " + detail : ""}`);
+        if (!cond) failed++;
+      }
+
+      async function run() {
+        // Start clean so the test is deterministic regardless of prior runs.
+        try {
+          localStorage.removeItem("tuition_demo_state_v1");
+          localStorage.removeItem("tuition_demo_last_user");
+        } catch (_) {}
+
+        // ---- PAGE LOAD 1: tutor creates a student + an invite ----
+        const p1 = new MockProvider();
+        await p1.init();
+        await p1.signIn("tutor@demo.app", "demo");
+        const stu = await p1.addStudent({ name: "Zoe", subject: "Maths" });
+        const inv = await p1.createInvite({
+          studentId: stu.id, parentEmail: "zoe.parent@demo.app", parentName: "Zoe's mum",
+        });
+        check("load1: invite created", !!inv.code);
+
+        // Sanity: in-session redeem works on the SAME instance.
+        await p1.signIn("zoe.parent@demo.app", "demo"); // invited email auto-creates
+        const sameInstance = await p1.redeemInvite(inv.code).then(() => true).catch((e) => e.message);
+        check("same-instance redeem works", sameInstance === true, String(sameInstance));
+
+        // ---- reset that linkage for the cross-load test: recreate a fresh invite ----
+        await p1.signIn("tutor@demo.app", "demo");
+        const stu2 = await p1.addStudent({ name: "Max", subject: "English" });
+        const inv2 = await p1.createInvite({
+          studentId: stu2.id, parentEmail: "max.parent@demo.app", parentName: "Max's dad",
+        });
+
+        // ---- PAGE LOAD 2: a brand-new provider instance (reload / later visit) ----
+        const p2 = new MockProvider();
+        await p2.init(); // should LOAD persisted state, not reseed (same week)
+        const invitesP2 = await p2.signIn("tutor@demo.app", "demo").then(() => p2.listInvites());
+        check("load2: persisted invite is present", invitesP2.some((i) => i.code === inv2.code),
+              `codes=${invitesP2.map((i) => i.code).join(",")}`);
+        const studentsP2 = await p2.listAllStudents();
+        check("load2: persisted student present", studentsP2.some((s) => s.id === stu2.id));
+
+        // The actual bug: redeem on the fresh instance.
+        await p2.signIn("max.parent@demo.app", "demo"); // invited email persisted -> auto-create OK
+        let redeemResult;
+        try { redeemResult = await p2.redeemInvite(inv2.code); }
+        catch (e) { redeemResult = { error: e.message }; }
+        check("CROSS-LOAD redeem works (the bug)", redeemResult && redeemResult.studentId === stu2.id,
+              JSON.stringify(redeemResult));
+
+        // And the parent is now linked + sees their child.
+        const me = await p2.getCurrentUser();
+        check("parent linked after cross-load redeem", me && me.studentIds.includes(stu2.id));
+
+        // ---- demoAccounts stays clean (only the 4 seed accounts) ----
+        const accts = p2.demoAccounts();
+        check("demoAccounts shows only 4 seed accounts", accts.length === 4,
+              `got ${accts.length}: ${accts.map((a) => a.email).join(",")}`);
+
+        // ---- resetDemo wipes back to seed ----
+        await p2.resetDemo();
+        const p3 = new MockProvider();
+        await p3.init();
+        await p3.signIn("tutor@demo.app", "demo");
+        const invitesP3 = await p3.listInvites();
+        check("resetDemo cleared invites", invitesP3.length === 0, `left=${invitesP3.length}`);
+
+        // cleanup
+        try {
+          localStorage.removeItem("tuition_demo_state_v1");
+          localStorage.removeItem("tuition_demo_last_user");
+        } catch (_) {}
+
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST3_OK" : "SELFTEST3_FAIL";
+      }
+
+      run().catch((e) => {
+        document.getElementById("out").textContent = "ERROR: " + e.stack;
+        document.title = "SELFTEST3_FAIL";
+      });
+    </script>
+  </body>
+</html>

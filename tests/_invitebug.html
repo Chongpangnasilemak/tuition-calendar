@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>RUNNING</title></head>
+<body>
+<pre id="out">starting...</pre>
+<script type="module">
+import { MockProvider } from "../js/data/mock-provider.js";
+
+const lines = [];
+const log = (s) => lines.push(s);
+
+async function run() {
+  // ---- Instance A ----
+  const A = new MockProvider();
+  await A.init();
+  await A.signIn("tutor@demo.app", "demo");
+  const students = await A.listAllStudents();
+  const inv = await A.createInvite({
+    studentId: students[0].id,
+    parentEmail: "newp@demo.app",
+    parentName: "New P",
+  });
+  log("invite.code = " + inv.code);
+
+  // ---- SAME instance A: redeem ----
+  let sameInstanceResult;
+  try {
+    await A.signIn("newp@demo.app", "demo"); // invited email auto-creates
+    const r = await A.redeemInvite(inv.code);
+    sameInstanceResult = "SUCCESS: linked studentId=" + r.studentId + " (" + r.studentName + ")";
+  } catch (e) {
+    sameInstanceResult = "FAILED: " + e.message;
+  }
+  log("SAME_INSTANCE_REDEEM: " + sameInstanceResult);
+
+  // ---- Instance B (simulates page reload / different device) ----
+  const B = new MockProvider();
+  await B.init();
+  let freshSignInNote = "";
+  let freshRedeemError = "";
+  try {
+    await B.signIn("newp@demo.app", "demo"); // B has NO invite for this email
+    freshSignInNote = "signIn unexpectedly succeeded";
+    try {
+      await B.redeemInvite(inv.code);
+      freshRedeemError = "redeem unexpectedly SUCCEEDED";
+    } catch (e2) {
+      freshRedeemError = e2.message;
+    }
+  } catch (e) {
+    freshSignInNote = "signIn threw: " + e.message;
+    // Try redeem anyway to capture redeem-path error if reachable.
+    try {
+      await B.redeemInvite(inv.code);
+      freshRedeemError = "redeem unexpectedly SUCCEEDED";
+    } catch (e2) {
+      freshRedeemError = e2.message;
+    }
+  }
+  log("FRESH_INSTANCE_SIGNIN: " + freshSignInNote);
+  log("FRESH_INSTANCE_REDEEM_ERROR: " + freshRedeemError);
+}
+
+run()
+  .then(() => {
+    document.getElementById("out").textContent = lines.join("\n");
+    document.title = "REPRO_DONE";
+  })
+  .catch((err) => {
+    document.getElementById("out").textContent =
+      lines.join("\n") + "\nUNCAUGHT: " + (err && err.message ? err.message : String(err));
+    document.title = "REPRO_DONE";
+  });
+</script>
+</body>
+</html>

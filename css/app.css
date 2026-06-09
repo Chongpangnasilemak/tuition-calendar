@@ -67,6 +67,19 @@ h2 { font-size: 1.1rem; margin: 0; }
   letter-spacing: 0.02em;
 }
 .banner--show { display: block; }
+.banner__reset {
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  padding: 1px 8px;
+  margin-left: 4px;
+}
+.banner__reset:hover { background: rgba(255, 255, 255, 0.35); }
 
 /* ----- top bar ----- */
 .topbar-wrap { position: sticky; top: 0; z-index: 30; }

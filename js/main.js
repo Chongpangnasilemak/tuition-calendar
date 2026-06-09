@@ -23,7 +23,36 @@ async function boot() {
 
   // Demo banner.
   if (state.mode === "demo") {
-    bannerEl.textContent = "DEMO MODE — data is not saved. Reload resets everything.";
+    // ?reset=1 wipes persisted demo data back to the sample set. Runs before
+    // onAuthChanged is wired below; the later registration renders the result
+    // (resetDemo sets current=null, so the initial fire lands on login).
+    const params = new URLSearchParams(location.search);
+    if (params.get("reset") === "1" && typeof provider.resetDemo === "function") {
+      await provider.resetDemo();
+      params.delete("reset");
+      const qs = params.toString();
+      history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+    }
+
+    bannerEl.textContent = "DEMO MODE — your changes are saved in this browser. ";
+    if (typeof provider.resetDemo === "function") {
+      const resetBtn = el(
+        "button",
+        {
+          class: "banner__reset",
+          type: "button",
+          onClick: async () => {
+            if (confirm("Reset the demo to its original sample data? This clears everything you've added in this browser.")) {
+              await provider.resetDemo();
+              location.hash = "";
+              location.reload();
+            }
+          },
+        },
+        "Reset demo"
+      );
+      bannerEl.appendChild(resetBtn);
+    }
     bannerEl.classList.add("banner--show");
   }
 

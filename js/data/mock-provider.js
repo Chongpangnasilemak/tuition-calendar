@@ -22,15 +22,20 @@ import {
   STUDENTS,
   buildLessons,
   buildRequests,
+  mondayOf,
 } from "./mock-data.js";
 
-const LAST_USER_KEY = "tuition_demo_last_user";
+const LAST_USER_KEY = "tuition_demo_last_user"; // legacy fallback key
+const STATE_KEY = "tuition_demo_state_v1";      // versioned full-state blob
+const STATE_VERSION = 1;                        // bump when seed/shape changes
+
+// Canonical seed accounts shown as quick-login buttons (so synthetic invite
+// parents created at runtime don't pollute the login screen).
+const SEED_ACCOUNT_UIDS = ["tutor-1", "parent-a", "parent-b", "parent-c"];
 
 export class MockProvider extends DataProvider {
   constructor() {
     super();
-    // Deep-clone the seed constants so mutations (add student/lesson, redeem
-    // invite) stay local to this instance and don't leak across providers/tests.
     this._users = {};
     this._students = {};
     this._lessons = [];
@@ -38,11 +43,84 @@ export class MockProvider extends DataProvider {
     this._invites = [];
     this._current = null; // uid string or null
     this._authCbs = new Set();
+    this._persist = true; // set false on first localStorage failure
+    this._probed = false; // cache the availability probe
   }
 
-  async init() {
+  // ------------------------------------------------------------------- //
+  // Persistence — demo state survives reloads in the SAME browser, so a
+  // tutor's invite/lesson is still there after a refresh and visible to a
+  // parent who opens the app in the same browser. (Cross-DEVICE sharing is
+  // what live Firebase mode is for.)
+  // ------------------------------------------------------------------- //
+  _canPersist() {
+    if (this._probed) return this._persist;
+    this._probed = true;
+    try {
+      const k = "__demo_probe__";
+      localStorage.setItem(k, "1");
+      localStorage.removeItem(k);
+      this._persist = true;
+    } catch (_) {
+      this._persist = false; // private mode / disabled -> in-memory only
+    }
+    return this._persist;
+  }
+
+  _save() {
+    if (!this._canPersist()) return;
+    try {
+      const blob = {
+        version: STATE_VERSION,
+        seedWeekISO: this._seedWeekISO, // for week-staleness reseed
+        current: this._current,
+        users: this._users,
+        students: this._students,
+        lessons: this._lessons,
+        requests: this._requests,
+        invites: this._invites,
+      };
+      localStorage.setItem(STATE_KEY, JSON.stringify(blob));
+    } catch (_) {
+      // Quota/serialize failure: stop persisting this session, but KEEP the
+      // last good blob (don't remove it — removing causes data loss on reload).
+      this._persist = false;
+    }
+  }
+
+  _load() {
+    if (!this._canPersist()) return null;
+    let raw;
+    try {
+      raw = localStorage.getItem(STATE_KEY);
+    } catch (_) {
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      const blob = JSON.parse(raw);
+      if (!blob || blob.version !== STATE_VERSION) return null;
+      if (
+        typeof blob.users !== "object" ||
+        typeof blob.students !== "object" ||
+        !Array.isArray(blob.lessons) ||
+        !Array.isArray(blob.requests) ||
+        !Array.isArray(blob.invites)
+      ) {
+        return null;
+      }
+      return blob;
+    } catch (_) {
+      // Corrupt JSON: remove it so we don't keep failing, then reseed.
+      try { localStorage.removeItem(STATE_KEY); } catch (_) {}
+      return null;
+    }
+  }
+
+  /** Build fresh demo state from the seed constants (deep-cloned). */
+  _seed() {
     const now = new Date();
-    // Clone seed users/students (so add/edit doesn't touch the shared modules).
+    this._seedWeekISO = mondayOf(now).toISOString();
     this._users = {};
     for (const [k, u] of Object.entries(USERS)) {
       this._users[k] = { ...u, studentIds: u.studentIds.slice() };
@@ -54,12 +132,50 @@ export class MockProvider extends DataProvider {
     this._lessons = buildLessons(now);
     this._requests = buildRequests(now);
     this._invites = [];
-    // Restore last demo user (if any) for a smoother reload experience.
-    try {
-      const last = localStorage.getItem(LAST_USER_KEY);
-      if (last && this._userByUid(last)) this._current = last;
-    } catch (_) {
-      /* localStorage may be unavailable; fine for demo */
+  }
+
+  /** Adopt a loaded blob into instance state. _users MUST be set before the
+   *  _current validation (which reads this._users via _userByUid). */
+  _applyBlob(blob) {
+    this._users = blob.users;
+    this._students = blob.students;
+    this._lessons = blob.lessons;
+    this._requests = blob.requests;
+    this._invites = blob.invites;
+    this._seedWeekISO = blob.seedWeekISO || null;
+    this._current =
+      blob.current && this._userByUid(blob.current) ? blob.current : null;
+  }
+
+  /** Wipe persisted demo data and start fresh from seed. */
+  async resetDemo() {
+    try { localStorage.removeItem(STATE_KEY); } catch (_) {}
+    try { localStorage.removeItem(LAST_USER_KEY); } catch (_) {}
+    this._persist = true;
+    this._probed = false;
+    this._seed();
+    this._current = null;
+    this._save();
+    this._emit();
+  }
+
+  async init() {
+    const blob = this._load();
+    const thisWeek = mondayOf(new Date()).toISOString();
+    // Reseed if no/old blob, OR the persisted seed week is stale (so a returning
+    // browser doesn't open to an empty current week — the seed lessons are
+    // anchored to whatever week the demo was first seeded).
+    if (blob && blob.seedWeekISO === thisWeek) {
+      this._applyBlob(blob);
+    } else {
+      this._seed();
+      this._current = null;
+      // Legacy fallback: if a previous session remembered a user, keep them.
+      try {
+        const last = localStorage.getItem(LAST_USER_KEY);
+        if (last && this._userByUid(last)) this._current = last;
+      } catch (_) {}
+      this._save();
     }
   }
 
@@ -125,6 +241,7 @@ export class MockProvider extends DataProvider {
     try {
       localStorage.setItem(LAST_USER_KEY, u.uid);
     } catch (_) {}
+    this._save();
     this._emit();
     return this._viewer();
   }
@@ -134,7 +251,7 @@ export class MockProvider extends DataProvider {
     const clean = (email || "").trim().toLowerCase();
     if (!clean) throw new Error("Email is required.");
     if (this._userByEmail(clean)) {
-      // Already exists in demo — just sign in.
+      // Already exists in demo — delegate to signIn (which saves itself).
       return this.signIn(clean, password);
     }
     const uid = "parent-" + rid();
@@ -149,6 +266,7 @@ export class MockProvider extends DataProvider {
     try {
       localStorage.setItem(LAST_USER_KEY, uid);
     } catch (_) {}
+    this._save();
     this._emit();
     return this._viewer();
   }
@@ -158,16 +276,17 @@ export class MockProvider extends DataProvider {
     try {
       localStorage.removeItem(LAST_USER_KEY);
     } catch (_) {}
+    this._save();
     this._emit();
   }
 
-  /** Demo-only convenience: list selectable accounts for the login screen. */
+  /** Demo-only convenience: list selectable accounts for the login screen.
+   *  Filtered to the canonical seed accounts so synthetic invite-created
+   *  parents (persisted across reloads) don't clutter the login buttons. */
   demoAccounts() {
-    return Object.values(this._users).map((u) => ({
-      email: u.email,
-      displayName: u.displayName,
-      role: u.role,
-    }));
+    return SEED_ACCOUNT_UIDS.map((uid) => this._userByUid(uid))
+      .filter(Boolean)
+      .map((u) => ({ email: u.email, displayName: u.displayName, role: u.role }));
   }
 
   // ---- students ----
@@ -258,6 +377,7 @@ export class MockProvider extends DataProvider {
       note: (note || "").trim(),
     };
     this._requests.push(req);
+    this._save();
     return this._decorateRequest(req, v);
   }
 
@@ -274,6 +394,7 @@ export class MockProvider extends DataProvider {
     if (action === "decline") {
       req.status = "declined";
       req.resolvedISO = new Date().toISOString();
+      this._save();
       return this._decorateRequest(req, v);
     }
 
@@ -302,6 +423,7 @@ export class MockProvider extends DataProvider {
 
     req.status = "approved";
     req.resolvedISO = new Date().toISOString();
+    this._save();
     return this._decorateRequest(req, v);
   }
 
@@ -323,6 +445,7 @@ export class MockProvider extends DataProvider {
       status: "booked",
     };
     this._lessons.push(lesson);
+    this._save();
     return projectLessonForViewer(lesson, v);
   }
 
@@ -330,18 +453,26 @@ export class MockProvider extends DataProvider {
     const v = this._requireTutor();
     const lesson = this._lessons.find((l) => l.id === id);
     if (!lesson) throw new Error("Lesson not found.");
+    // Validate BEFORE mutating so an invalid patch can't leave bad state.
+    let newStudentId = lesson.studentId;
+    let newStudentName = lesson.studentName;
     if (patch.studentId && patch.studentId !== lesson.studentId) {
       const s = this._students[patch.studentId];
       if (!s) throw new Error("Unknown student.");
-      lesson.studentId = patch.studentId;
-      lesson.studentName = s.name;
+      newStudentId = patch.studentId;
+      newStudentName = s.name;
     }
-    if (patch.startISO) lesson.startISO = patch.startISO;
-    if (patch.endISO) lesson.endISO = patch.endISO;
-    if (lesson.endISO <= lesson.startISO)
-      throw new Error("End must be after start.");
+    const newStart = patch.startISO || lesson.startISO;
+    const newEnd = patch.endISO || lesson.endISO;
+    if (newEnd <= newStart) throw new Error("End must be after start.");
+
+    lesson.studentId = newStudentId;
+    lesson.studentName = newStudentName;
+    lesson.startISO = newStart;
+    lesson.endISO = newEnd;
     if (patch.subject != null) lesson.subject = patch.subject.trim();
     if (patch.notes != null) lesson.notes = patch.notes.trim();
+    this._save();
     return projectLessonForViewer(lesson, v);
   }
 
@@ -350,6 +481,7 @@ export class MockProvider extends DataProvider {
     const i = this._lessons.findIndex((l) => l.id === id);
     if (i === -1) throw new Error("Lesson not found.");
     this._lessons.splice(i, 1);
+    this._save();
   }
 
   // ---- tutor: students & onboarding ----
@@ -369,6 +501,7 @@ export class MockProvider extends DataProvider {
       subject: (subject || "").trim(),
       parentUids: [],
     };
+    this._save();
     return { id, name: clean };
   }
 
@@ -389,6 +522,7 @@ export class MockProvider extends DataProvider {
       createdISO: new Date().toISOString(),
     };
     this._invites.push(invite);
+    this._save();
     return invite;
   }
 
@@ -422,6 +556,7 @@ export class MockProvider extends DataProvider {
     invite.status = "redeemed";
     invite.redeemedByUid = v.uid;
 
+    this._save();
     this._emit(); // viewer.studentIds changed -> re-render
     return { studentId: invite.studentId, studentName: student?.name || invite.studentId };
   }
