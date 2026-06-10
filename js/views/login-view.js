@@ -151,7 +151,8 @@ export class LoginView {
             // On success, onAuthChanged re-renders. On redirect, the page reloads.
           } catch (err) {
             gbtn.disabled = false;
-            toast(this._friendly(err), "error");
+            const msg = this._friendly(err);
+            if (msg) toast(msg, "error"); // empty = user just closed the popup
           }
         });
         wrap.appendChild(gbtn);
@@ -230,6 +231,8 @@ export class LoginView {
 
   _friendly(err) {
     const code = (err && err.code) || "";
+    if (code.includes("popup-closed-by-user") || code.includes("cancelled-popup-request"))
+      return ""; // user closed the Google popup — not an error worth shouting about
     if (code.includes("email-already-in-use")) return "That email already has an account — try Sign in.";
     if (code.includes("invalid-credential") || code.includes("wrong-password")) return "Wrong email or password.";
     if (code.includes("user-not-found")) return "No account with that email — try Create an account.";

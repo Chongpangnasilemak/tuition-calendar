@@ -24,6 +24,7 @@ import {
   createUserWithEmailAndPassword,
   updateProfile,
   GoogleAuthProvider,
+  signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   signOut,
@@ -149,18 +150,33 @@ export class FirebaseProvider extends DataProvider {
   supportsGoogle() { return true; }
 
   /**
-   * Sign in with Google using the REDIRECT flow. On github.io the redirect flow
-   * is more reliable than the popup (the popup's cross-origin handler is a common
-   * source of "requested action is invalid"), and its redirect URI
-   * (https://<site>/) is the one registered on the OAuth client. The page does a
-   * full-page redirect to Google and back; getRedirectResult()/onAuthStateChanged
-   * in init() complete the sign-in. A brand-new Google user is just a parent with
-   * no children until they redeem an invite code.
+   * Sign in with Google using a POPUP.
+   *
+   * We deliberately use the popup, NOT signInWithRedirect: this app is hosted on
+   * github.io while the Firebase auth handler lives on firebaseapp.com, so the
+   * redirect flow's session can't persist back to our origin (modern browsers
+   * block the cross-domain handler's third-party storage) — the user ends up
+   * back on the login screen even though auth succeeded. The popup keeps the
+   * session on our origin and works. If the popup is blocked, we fall back to a
+   * redirect as a last resort. A brand-new Google user is just a parent with no
+   * children until they redeem an invite code.
    */
   async signInWithGoogle() {
     const gp = new GoogleAuthProvider();
-    await signInWithRedirect(this._auth, gp);
-    return null; // page navigates away; resolved after the round-trip
+    try {
+      const cred = await signInWithPopup(this._auth, gp);
+      this._viewer = await this._loadViewer(cred.user);
+      return this._viewer;
+    } catch (e) {
+      const code = (e && e.code) || "";
+      if (code.includes("popup-blocked") || code.includes("operation-not-supported")) {
+        // Popup unavailable (e.g. some in-app browsers) -> redirect fallback.
+        await signInWithRedirect(this._auth, gp);
+        return null;
+      }
+      // popup-closed-by-user / cancelled -> surface a clean message to the caller.
+      throw e;
+    }
   }
 
   async signOut() {
