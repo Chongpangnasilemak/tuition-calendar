@@ -77,7 +77,16 @@ export class FirebaseProvider extends DataProvider {
 
     // Keep a Viewer in sync with auth + the user's /users doc + /admins marker.
     onAuthStateChanged(this._auth, async (fbUser) => {
-      this._viewer = fbUser ? await this._loadViewer(fbUser) : null;
+      try {
+        this._viewer = fbUser ? await this._loadViewer(fbUser) : null;
+      } catch (e) {
+        // NEVER bounce a signed-in user back to login just because a profile
+        // read hiccupped. Fall back to a minimal parent viewer so they stay
+        // logged in (a brand-new Google user with no users/ doc lands here).
+        this._viewer = fbUser
+          ? { uid: fbUser.uid, role: "parent", studentIds: [], displayName: fbUser.displayName || fbUser.email || "User" }
+          : null;
+      }
       for (const cb of this._authCbs) cb(this._viewer);
     });
   }
@@ -85,17 +94,24 @@ export class FirebaseProvider extends DataProvider {
   async _loadViewer(fbUser) {
     const db = this._db;
     // Role/link come from /users/{uid}; tutor confirmed by /admins/{uid}.
-    const [userSnap, adminSnap] = await Promise.all([
-      getDoc(doc(db, "users", fbUser.uid)),
-      getDoc(doc(db, "admins", fbUser.uid)),
-    ]);
-    const u = userSnap.exists() ? userSnap.data() : {};
-    const isTutor = adminSnap.exists() || u.role === "tutor";
+    // Read each independently so one failing (e.g. a transient error) doesn't
+    // wipe out the whole viewer — we degrade gracefully instead.
+    let u = {};
+    let isAdmin = false;
+    try {
+      const userSnap = await getDoc(doc(db, "users", fbUser.uid));
+      if (userSnap.exists()) u = userSnap.data();
+    } catch (_) {}
+    try {
+      const adminSnap = await getDoc(doc(db, "admins", fbUser.uid));
+      isAdmin = adminSnap.exists();
+    } catch (_) {}
+    const isTutor = isAdmin || u.role === "tutor";
     return {
       uid: fbUser.uid,
       role: isTutor ? "tutor" : "parent",
       studentIds: Array.isArray(u.studentIds) ? u.studentIds : [],
-      displayName: u.displayName || fbUser.email || "User",
+      displayName: u.displayName || fbUser.displayName || fbUser.email || "User",
     };
   }
 
