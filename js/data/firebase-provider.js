@@ -24,7 +24,6 @@ import {
   createUserWithEmailAndPassword,
   updateProfile,
   GoogleAuthProvider,
-  signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   signOut,
@@ -134,32 +133,18 @@ export class FirebaseProvider extends DataProvider {
   supportsGoogle() { return true; }
 
   /**
-   * Sign in with Google. Tries a popup; if the browser blocks it (common on
-   * mobile) falls back to a full-page redirect. After sign-in a brand-new Google
-   * user is just a parent with no children until they redeem an invite code —
-   * same post-login path as email sign-up (onAuthStateChanged -> _loadViewer).
+   * Sign in with Google using the REDIRECT flow. On github.io the redirect flow
+   * is more reliable than the popup (the popup's cross-origin handler is a common
+   * source of "requested action is invalid"), and its redirect URI
+   * (https://<site>/) is the one registered on the OAuth client. The page does a
+   * full-page redirect to Google and back; getRedirectResult()/onAuthStateChanged
+   * in init() complete the sign-in. A brand-new Google user is just a parent with
+   * no children until they redeem an invite code.
    */
   async signInWithGoogle() {
     const gp = new GoogleAuthProvider();
-    try {
-      const cred = await signInWithPopup(this._auth, gp);
-      this._viewer = await this._loadViewer(cred.user);
-      return this._viewer;
-    } catch (e) {
-      const code = (e && e.code) || "";
-      // Popup blocked / closed / unsupported -> use redirect. The result is
-      // picked up by getRedirectResult() on the next page load (see init()).
-      if (
-        code.includes("popup-blocked") ||
-        code.includes("popup-closed-by-user") ||
-        code.includes("cancelled-popup-request") ||
-        code.includes("operation-not-supported")
-      ) {
-        await signInWithRedirect(this._auth, gp);
-        return null; // page will redirect; resolved after the round-trip
-      }
-      throw e;
-    }
+    await signInWithRedirect(this._auth, gp);
+    return null; // page navigates away; resolved after the round-trip
   }
 
   async signOut() {
