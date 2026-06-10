@@ -1,45 +1,30 @@
 /* ============================================================================
-   Tuition Calendar — styles. Plain CSS, no build step. Light + dark via
-   prefers-color-scheme.
+   Tuition Calendar — styles. Plain CSS, no build step.
+   Light theme on a Google / Material palette (always light).
    ============================================================================ */
 
 :root {
-  --bg: #f5f6fa;
+  --bg: #ffffff;            /* Google surfaces are bright white */
   --surface: #ffffff;
-  --surface-2: #f0f2f7;
-  --border: #e2e5ee;
-  --text: #1f2433;
-  --muted: #6b7280;
-  --primary: #4f46e5;
-  --primary-d: #4338ca;
-  --mine: #2563eb;
-  --mine-bg: #e8f0fe;
-  --busy-bg: #eceef3;
-  --busy-text: #8a90a0;
-  --success: #16a34a;
-  --warn: #d97706;
-  --danger: #dc2626;
+  --surface-2: #f1f3f4;     /* Google grey 100 */
+  --border: #dadce0;        /* Google grey 300 (the classic outline) */
+  --text: #202124;          /* Google grey 900 */
+  --muted: #5f6368;         /* Google grey 700 */
+  --primary: #1a73e8;       /* Google blue 600 */
+  --primary-d: #1765cc;     /* darker blue for hover */
+  --mine: #1a73e8;          /* own-child events use Google blue */
+  --mine-bg: #e8f0fe;       /* Google blue 50 */
+  --busy-bg: #f1f3f4;
+  --busy-text: #80868b;     /* Google grey 600 */
+  --success: #1e8e3e;       /* Google green 600 */
+  --warn: #f9ab00;          /* Google yellow 700 */
+  --danger: #d93025;        /* Google red 600 */
   --radius: 12px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 16px rgba(16, 24, 40, 0.06);
+  --shadow: 0 1px 2px rgba(60, 64, 67, 0.10), 0 1px 6px rgba(60, 64, 67, 0.08);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #11131a;
-    --surface: #181b24;
-    --surface-2: #1f2330;
-    --border: #2a2f3d;
-    --text: #e6e8ef;
-    --muted: #9aa1b0;
-    --primary: #6366f1;
-    --primary-d: #4f46e5;
-    --mine: #60a5fa;
-    --mine-bg: #1d2a44;
-    --busy-bg: #232735;
-    --busy-text: #767d90;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.35);
-  }
-}
+/* Force light: we deliberately do NOT follow prefers-color-scheme dark. */
+html { color-scheme: light; }
 
 * { box-sizing: border-box; }
 
@@ -122,8 +107,8 @@ h2 { font-size: 1.1rem; margin: 0; }
   border-radius: 999px;
   text-transform: uppercase;
 }
-.role-pill--tutor { background: #ede9fe; color: #6d28d9; }
-.role-pill--parent { background: #dbeafe; color: #1d4ed8; }
+.role-pill--tutor { background: #e6f4ea; color: #1e8e3e; }   /* Google green */
+.role-pill--parent { background: #e8f0fe; color: #1a73e8; }  /* Google blue */
 
 /* ----- layout ----- */
 .app { max-width: 1100px; margin: 0 auto; padding: 1.25rem 1rem 4rem; }
@@ -309,11 +294,8 @@ h2 { font-size: 1.1rem; margin: 0; }
 }
 .ev--mine .ev__title { color: var(--mine); }
 .ev--detail { /* tutor view, any student */
-  background: #eef2ff;
-  border-color: #c7d2fe;
-}
-@media (prefers-color-scheme: dark) {
-  .ev--detail { background: #25304d; border-color: #3a4a78; }
+  background: #e8f0fe;     /* Google blue 50 */
+  border-color: #aecbfa;   /* Google blue 200 */
 }
 .ev--busy {
   background: repeating-linear-gradient(
