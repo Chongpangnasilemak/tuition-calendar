@@ -22,9 +22,23 @@ service cloud.firestore {
     function isSignedIn() { return request.auth != null; }
     function uid()        { return request.auth.uid; }
 
+    // Tutor identity: either an /admins/{uid} marker, OR the signed-in user's
+    // email is on the tutor allowlist (settings/tutors.emails). The allowlist is
+    // writable only by an existing tutor, so a parent can't self-promote. This
+    // lets you pre-authorize a tutor by email before they've ever signed in.
+    function tutorEmails() {
+      return exists(/databases/$(database)/documents/settings/tutors)
+        ? get(/databases/$(database)/documents/settings/tutors).data.emails
+        : [];
+    }
     function isTutor() {
       return isSignedIn()
-        && exists(/databases/$(database)/documents/admins/$(uid()));
+        && (
+          exists(/databases/$(database)/documents/admins/$(uid()))
+          || (request.auth.token.email != null
+              && request.auth.token.email_verified == true
+              && request.auth.token.email.lower() in tutorEmails())
+        );
     }
 
     function userData() {

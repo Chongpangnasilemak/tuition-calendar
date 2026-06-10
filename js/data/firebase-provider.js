@@ -94,11 +94,12 @@ export class FirebaseProvider extends DataProvider {
 
   async _loadViewer(fbUser) {
     const db = this._db;
-    // Role/link come from /users/{uid}; tutor confirmed by /admins/{uid}.
-    // Read each independently so one failing (e.g. a transient error) doesn't
-    // wipe out the whole viewer — we degrade gracefully instead.
+    // Role/link come from /users/{uid}; tutor confirmed by /admins/{uid} OR the
+    // tutor email allowlist (settings/tutors.emails). Read each independently so
+    // one failing (e.g. a transient error) doesn't wipe out the whole viewer.
     let u = {};
     let isAdmin = false;
+    let allowEmails = [];
     try {
       const userSnap = await getDoc(doc(db, "users", fbUser.uid));
       if (userSnap.exists()) u = userSnap.data();
@@ -107,7 +108,13 @@ export class FirebaseProvider extends DataProvider {
       const adminSnap = await getDoc(doc(db, "admins", fbUser.uid));
       isAdmin = adminSnap.exists();
     } catch (_) {}
-    const isTutor = isAdmin || u.role === "tutor";
+    try {
+      const tSnap = await getDoc(doc(db, "settings", "tutors"));
+      if (tSnap.exists() && Array.isArray(tSnap.data().emails)) allowEmails = tSnap.data().emails;
+    } catch (_) {}
+    const email = (fbUser.email || "").toLowerCase();
+    const onAllowlist = !!email && allowEmails.includes(email);
+    const isTutor = isAdmin || u.role === "tutor" || onAllowlist;
     return {
       uid: fbUser.uid,
       role: isTutor ? "tutor" : "parent",
