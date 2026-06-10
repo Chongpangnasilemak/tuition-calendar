@@ -18,36 +18,49 @@ function monthLabel(periodMonth) {
   return new Date(y, m - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" });
 }
 
-/** Render the invoice as a self-contained card element. */
+/** Render the invoice as a self-contained, professional document element. */
 export function renderInvoiceDetail(inv) {
   const t = inv.totals || {};
   const rateLabel = inv.rateType === "hourly" ? `${money(inv.rate)} / hour` : `${money(inv.rate)} / lesson`;
+  const paid = inv.status === "paid";
 
-  // Header band.
-  const header = el("div", { class: "inv__head" }, [
-    el("div", { class: "inv__from" }, [
-      el("div", { class: "inv__bigname" }, inv.billFrom || "Tuition"),
-      el("div", { class: "muted" }, "INVOICE"),
+  // --- Accent header band: business name + INVOICE | invoice no + dates ---
+  const header = el("div", { class: "inv__band" }, [
+    el("div", { class: "inv__brand" }, [
+      el("div", { class: "inv__biz" }, inv.billFrom || "Tuition"),
+      el("div", { class: "inv__tag" }, "Private Tuition"),
     ]),
-    el("div", { class: "inv__meta" }, [
-      el("div", {}, [el("span", { class: "muted" }, "Invoice No: "), el("strong", {}, inv.invoiceNo || "(draft)")]),
-      el("div", { class: "muted" }, inv.invoiceDateISO ? fmtDate(inv.invoiceDateISO) : ""),
-      el("div", { class: "muted" }, monthLabel(inv.periodMonth)),
+    el("div", { class: "inv__title" }, [
+      el("div", { class: "inv__word" }, "INVOICE"),
+      el("div", { class: "inv__no" }, inv.invoiceNo || "DRAFT"),
     ]),
   ]);
 
-  // Bill to.
-  const billTo = el("div", { class: "inv__billto" }, [
-    el("span", { class: "muted" }, "Bill To: "),
-    el("strong", {}, inv.billToParent || "Parent"),
-    el("span", { class: "muted" }, inv.billToChild ? ` (Student: ${inv.billToChild})` : ""),
+  // --- Meta strip: dates + status ---
+  const meta = el("div", { class: "inv__metastrip" }, [
+    metaCell("Invoice date", inv.invoiceDateISO ? fmtDate(inv.invoiceDateISO) : "—"),
+    metaCell("Billing period", monthLabel(inv.periodMonth)),
+    metaCell("Status", paid ? "Paid" : (inv.status === "issued" ? "Unpaid" : "Draft")),
   ]);
 
-  // Line items table.
+  // --- From / Bill To two columns ---
+  const parties = el("div", { class: "inv__parties" }, [
+    el("div", { class: "inv__party" }, [
+      el("div", { class: "inv__plabel" }, "From"),
+      el("div", { class: "inv__pname" }, inv.billFrom || "Tuition"),
+    ]),
+    el("div", { class: "inv__party" }, [
+      el("div", { class: "inv__plabel" }, "Bill to"),
+      el("div", { class: "inv__pname" }, inv.billToParent || "Parent"),
+      inv.billToChild ? el("div", { class: "inv__psub" }, `Student: ${inv.billToChild}`) : null,
+    ]),
+  ]);
+
+  // --- Line-items table ---
   const rows = (inv.lineItems || []).filter((l) => l.included !== false).map((l) =>
     el("tr", {}, [
       el("td", {}, fmtDate(l.dateISO).replace(/^[A-Za-z]+,?\s*/, "")),
-      el("td", {}, `${l.startTime}–${l.endTime}`),
+      el("td", {}, `${l.startTime} – ${l.endTime}`),
       el("td", { class: "num" }, String(l.durationHours)),
       el("td", {}, l.remarks || ""),
       el("td", { class: "num" }, money(l.amount)),
@@ -55,53 +68,68 @@ export function renderInvoiceDetail(inv) {
   );
   const table = el("table", { class: "inv__table" }, [
     el("thead", {}, el("tr", {}, [
-      el("th", {}, "Date"), el("th", {}, "Time"), el("th", { class: "num" }, "Hrs"),
+      el("th", {}, "Date"), el("th", {}, "Time"), el("th", { class: "num" }, "Hours"),
       el("th", {}, "Remarks"), el("th", { class: "num" }, "Amount"),
     ])),
-    el("tbody", {}, rows.length ? rows : [el("tr", {}, el("td", { colspan: "5", class: "muted" }, "No lessons this period."))]),
+    el("tbody", {}, rows.length ? rows : [el("tr", {}, el("td", { colspan: "5", class: "muted inv__empty" }, "No lessons this period."))]),
   ]);
 
-  // Totals block.
-  const totalsBlock = el("div", { class: "inv__totals" }, [
-    totRow("Total Hours", String(t.totalHours ?? 0)),
+  // --- Totals (right-aligned, Total Payable emphasized) ---
+  const totals = el("div", { class: "inv__totalswrap" }, el("div", { class: "inv__totals" }, [
+    totRow("Total hours", String(t.totalHours ?? 0)),
     totRow("Rate", rateLabel),
-    totRow("Total Lesson Fee", money(t.totalLessonFee)),
-    totRow(inv.additionalMaterialsLabel || "Additional Materials", money(t.additionalMaterials)),
+    totRow("Total lesson fee", money(t.totalLessonFee)),
+    (t.additionalMaterials || 0) > 0 ? totRow(inv.additionalMaterialsLabel || "Additional materials", money(t.additionalMaterials)) : null,
     el("div", { class: "inv__payable" }, [
       el("span", {}, "Total Payable"),
       el("strong", {}, money(t.totalPayable)),
     ]),
+  ].filter(Boolean)));
+
+  const card = el("div", { class: "invoice" + (paid ? " invoice--paid" : "") }, [
+    paid ? el("div", { class: "inv__stamp" }, "PAID") : null,
+    header, meta, parties, table, totals,
   ]);
 
-  // Paid stamp.
-  const card = el("div", { class: "invoice" + (inv.status === "paid" ? " invoice--paid" : "") }, [
-    inv.status === "paid" ? el("div", { class: "inv__stamp" }, "FULLY PAID FOR") : null,
-    header, billTo, table, totalsBlock,
-  ]);
-
-  // PayNow block (issued/unpaid + a positive total + a number set).
-  if (inv.payNowId && (t.totalPayable || 0) > 0 && inv.status !== "paid") {
+  // --- PayNow block (issued + unpaid + positive total + number set) ---
+  if (inv.payNowId && (t.totalPayable || 0) > 0 && !paid) {
     const qrHolder = el("div", { class: "inv__qr" }, el("div", { class: "muted" }, "QR…"));
-    card.appendChild(el("div", { class: "inv__paynow" }, [
-      el("div", { class: "pnbadge" }, [
-        el("span", { class: "pnbadge__pay" }, "Pay"),
-        el("span", { class: "pnbadge__now" }, "Now"),
-        el("span", { class: "pnbadge__plus" }, "+ PayLah!"),
+    card.appendChild(el("div", { class: "inv__pay" }, [
+      el("div", { class: "inv__payleft" }, [
+        el("div", { class: "pnbadge" }, [
+          el("span", { class: "pnbadge__pay" }, "Pay"),
+          el("span", { class: "pnbadge__now" }, "Now"),
+          el("span", { class: "pnbadge__plus" }, "+ PayLah!"),
+        ]),
+        el("div", { class: "inv__payinfo" }, [
+          el("div", {}, [el("span", { class: "muted" }, "Amount  "), el("strong", {}, money(t.totalPayable))]),
+          el("div", { class: "muted" }, `To ${inv.payNowId}`),
+          el("div", { class: "muted" }, `Ref ${inv.invoiceNo || "—"}`),
+        ]),
       ]),
       qrHolder,
-      el("div", { class: "muted inv__qrnote" }, `Pay ${money(t.totalPayable)} to ${inv.payNowId} · Ref: ${inv.invoiceNo || "—"}`),
     ]));
-    // Render QR async.
-    renderQrCanvas(payloadFor(inv), 160)
+    renderQrCanvas(payloadFor(inv), 150)
       .then((c) => { qrHolder.innerHTML = ""; qrHolder.appendChild(c); })
       .catch(() => { qrHolder.innerHTML = ""; qrHolder.appendChild(el("div", { class: "muted" }, "(QR unavailable)")); });
   }
 
+  // --- Footer note ---
+  card.appendChild(el("div", { class: "inv__foot" }, paid
+    ? "Thank you — this invoice has been fully paid."
+    : "Please scan the PayNow code or transfer the total to the number above. Thank you!"));
+
   return card;
 }
 
+function metaCell(label, value) {
+  return el("div", { class: "inv__metacell" }, [
+    el("div", { class: "inv__metalabel" }, label),
+    el("div", { class: "inv__metaval" }, value),
+  ]);
+}
 function totRow(label, value) {
-  return el("div", { class: "inv__totrow" }, [el("span", { class: "muted" }, label), el("span", {}, value)]);
+  return el("div", { class: "inv__totrow" }, [el("span", {}, label), el("span", { class: "num" }, value)]);
 }
 
 function payloadFor(inv) {

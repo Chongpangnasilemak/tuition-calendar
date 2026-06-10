@@ -32,6 +32,33 @@ export function modal(title, bodyNode, footerNodes = []) {
   return { root, close };
 }
 
+/**
+ * A styled in-app confirm dialog (replaces the browser's native confirm()).
+ * @param {string} message
+ * @param {{title?:string, confirmLabel?:string, cancelLabel?:string, danger?:boolean}} [opts]
+ * @returns {Promise<boolean>} true if confirmed
+ */
+export function confirmModal(message, opts = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (val) => { if (settled) return; settled = true; close(); resolve(val); };
+
+    const cancel = el("button", { class: "btn btn--ghost", type: "button" }, opts.cancelLabel || "Cancel");
+    const ok = el("button", { class: "btn " + (opts.danger ? "btn--danger-solid" : "btn--primary"), type: "button" }, opts.confirmLabel || "Confirm");
+    cancel.addEventListener("click", () => done(false));
+    ok.addEventListener("click", () => done(true));
+
+    const body = el("p", { class: "confirm__msg" }, message);
+    const { root, close } = modal(opts.title || "Please confirm", body, [cancel, ok]);
+    // Backdrop click / × resolves false.
+    const obs = new MutationObserver(() => {
+      if (!document.body.contains(root) && !settled) { settled = true; obs.disconnect(); resolve(false); }
+    });
+    obs.observe(document.body, { childList: true });
+    ok.focus();
+  });
+}
+
 export function toast(message, kind = "info") {
   const t = el("div", { class: `toast toast--${kind}` }, message);
   document.body.appendChild(t);

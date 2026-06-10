@@ -5,7 +5,7 @@
 //   - See existing students and the status of invites.
 
 import { el, clear, fmtDateTime } from "../util.js";
-import { modal, toast } from "./components.js";
+import { modal, toast, confirmModal } from "./components.js";
 
 export class ManageView {
   constructor(mount, provider, viewer) {
@@ -121,7 +121,11 @@ export class ManageView {
     rtSel.addEventListener("change", debounced);
     const del = el("button", { class: "chip__x", type: "button", title: `Remove ${s.name}` }, "×");
     del.addEventListener("click", async () => {
-      if (!confirm(`Remove ${s.name}? This deletes their lessons and unlinks their parents. This can't be undone.`)) return;
+      const ok = await confirmModal(
+        `This deletes ${s.name}'s lessons and unlinks their parents. This can't be undone.`,
+        { title: `Remove ${s.name}?`, confirmLabel: "Remove", danger: true }
+      );
+      if (!ok) return;
       del.disabled = true;
       try {
         const res = await this.provider.removeStudent(s.id);

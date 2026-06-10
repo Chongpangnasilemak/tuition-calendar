@@ -4,7 +4,7 @@ import { getProvider, getMode } from "./data/index.js";
 import { state, setViewer } from "./state.js";
 import { Router } from "./router.js";
 import { LoginView } from "./views/login-view.js";
-import { modal, toast } from "./views/components.js";
+import { modal, toast, confirmModal } from "./views/components.js";
 import { el, clear } from "./util.js";
 
 const appEl = document.getElementById("app");
@@ -42,7 +42,11 @@ async function boot() {
           class: "banner__reset",
           type: "button",
           onClick: async () => {
-            if (confirm("Reset the demo to its original sample data? This clears everything you've added in this browser.")) {
+            const ok = await confirmModal(
+              "This clears everything you've added in this browser and restores the original sample data.",
+              { title: "Reset the demo?", confirmLabel: "Reset", danger: true }
+            );
+            if (ok) {
               await provider.resetDemo();
               location.hash = "";
               location.reload();

@@ -5,7 +5,7 @@
 //     PayNow QR for the total and a Paid/Unpaid status.
 
 import { el, clear, fmtDate, toDateInputValue } from "../util.js";
-import { modal, toast, statusPill } from "./components.js";
+import { modal, toast, statusPill, confirmModal } from "./components.js";
 import { payNowButton } from "./paynow-ui.js";
 import { openInvoiceModal } from "./invoice-detail.js";
 import { computeTotals } from "../data/invoice-math.js";
@@ -131,7 +131,11 @@ export class InvoicesView {
   }
 
   async _issue(inv) {
-    if (!confirm(`Issue invoice for ${inv.studentName}? It becomes visible to the parent and can no longer be edited.`)) return;
+    const ok = await confirmModal(
+      `This invoice for ${inv.studentName} becomes visible to the parent and can no longer be edited.`,
+      { title: "Issue invoice?", confirmLabel: "Issue" }
+    );
+    if (!ok) return;
     try {
       await this.provider.issueInvoice(inv.id);
       toast("Invoice issued.", "success");
@@ -246,7 +250,11 @@ export class InvoicesView {
       } catch (e) { saveBtn.disabled = issueBtn.disabled = false; toast(e.message, "error"); }
     });
     issueBtn.addEventListener("click", async () => {
-      if (!confirm("Save and issue this invoice? It becomes visible to the parent and can't be edited after.")) return;
+      const ok = await confirmModal(
+        "This invoice becomes visible to the parent and can't be edited after issuing.",
+        { title: "Save and issue?", confirmLabel: "Save & issue" }
+      );
+      if (!ok) return;
       saveBtn.disabled = issueBtn.disabled = true;
       try {
         const saved = await this.provider.saveInvoice(collect());

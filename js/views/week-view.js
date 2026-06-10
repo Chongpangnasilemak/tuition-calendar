@@ -25,7 +25,7 @@ import {
   toDateInputValue,
   localToISO,
 } from "../util.js";
-import { modal, toast } from "./components.js";
+import { modal, toast, confirmModal } from "./components.js";
 import { describeRecurrence } from "../data/recurrence.js";
 import { downloadICS, googleCalendarUrl } from "../ics.js";
 import { payNowButton } from "./paynow-ui.js";
@@ -382,7 +382,11 @@ export class WeekView {
   }
 
   async _removeSlot(slot) {
-    if (!confirm(`Remove this open slot (${fmtTimeRange(slot.startISO, slot.endISO)})?`)) return;
+    const ok = await confirmModal(
+      `Remove the open slot at ${fmtTimeRange(slot.startISO, slot.endISO)}? Parents will no longer be able to book it.`,
+      { title: "Remove open slot?", confirmLabel: "Remove", danger: true }
+    );
+    if (!ok) return;
     try {
       await this.provider.removeOpenSlot(slot.id);
       toast("Slot removed.", "success");
@@ -854,8 +858,12 @@ export class WeekView {
       const scope = isSeries ? await this._chooseScope("cancel") : "one";
       if (isSeries) {
         if (!scope) return;
-      } else if (!confirm(`Cancel ${lesson.studentName}'s lesson? This removes it from the calendar.`)) {
-        return;
+      } else {
+        const ok = await confirmModal(
+          `This removes ${lesson.studentName}'s lesson from the calendar.`,
+          { title: "Cancel lesson?", confirmLabel: "Cancel lesson", cancelLabel: "Keep", danger: true }
+        );
+        if (!ok) return;
       }
       save.disabled = cancelLesson.disabled = true;
       try {
