@@ -101,7 +101,7 @@ export class ManageView {
         el("label", { class: "field" }, [el("span", { class: "field__label" }, "PayNow mobile / UEN"), id]),
         el("label", { class: "field" }, [el("span", { class: "field__label" }, "Payee name"), nm]),
       ]),
-      el("div", {}, save),
+      el("div", { class: "paysettings__save" }, save),
     ]));
   }
 

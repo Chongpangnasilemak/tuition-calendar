@@ -499,12 +499,14 @@ export class WeekView {
     if (pay && pay.payNowId) {
       const payRow = el("div", { class: "calrow" }, [
         el("span", { class: "field__label" }, "Payment"),
-        payNowButton("Pay with PayNow / PayLah", () => ({
-          payNowId: pay.payNowId,
-          payeeName: pay.payeeName,
-          amount: rate,
-          reference: `${lesson.studentName} ${fmtDate(lesson.startISO).replace(/^[A-Za-z]+,?\s*/, "")}`,
-        })),
+        el("div", { class: "calrow__btns" }, [
+          payNowButton("Pay with PayNow / PayLah", () => ({
+            payNowId: pay.payNowId,
+            payeeName: pay.payeeName,
+            amount: rate,
+            reference: `${lesson.studentName} ${fmtDate(lesson.startISO).replace(/^[A-Za-z]+,?\s*/, "")}`,
+          })),
+        ]),
       ]);
       body.push(payRow);
     }

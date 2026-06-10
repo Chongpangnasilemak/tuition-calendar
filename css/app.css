@@ -564,6 +564,13 @@ textarea.field__input { resize: vertical; }
 
 /* ----- manage: payment settings + student rows ----- */
 .paysettings { margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--border); }
+.paysettings h2 { margin-top: 0; }
+.paysettings p { margin: 0.2rem 0 0.7rem; }
+.paysettings .form__row { margin-bottom: 0.8rem; }
+.paysettings__save { margin-top: 0.2rem; }
+@media (max-width: 560px) {
+  .paysettings .form__row { grid-template-columns: 1fr; }
+}
 .stulist { display: flex; flex-direction: column; gap: 0.4rem; }
 .sturow {
   display: flex; align-items: center; gap: 0.6rem;
