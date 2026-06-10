@@ -109,6 +109,14 @@ service cloud.firestore {
       allow delete: if isTutor();
     }
 
+    // ---- settings: tutor-managed app settings (e.g. payment/PayNow id).
+    //      Readable by any signed-in user (parents need the PayNow id to make a
+    //      QR); writable by the tutor only. No sensitive data here. ----
+    match /settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isTutor();
+    }
+
     // ---- openslots: tutor-published bookable slots (time/status only, no
     //      identity). Any signed-in user may read; only the tutor creates/deletes.
     //      A parent may UPDATE only to claim an open slot (status -> 'taken');

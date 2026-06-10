@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Tuition Calendar — PayNow self-test</title></head>
+  <body>
+    <h1>Self-test 6 (PayNow QR + rates/settings)</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      import { MockProvider } from "../js/data/mock-provider.js";
+      import { buildPayNowPayload, normaliseMobile } from "../js/paynow.js";
+
+      const results = [];
+      let failed = 0;
+      const check = (n, c, d = "") => { results.push(`${c ? "PASS" : "FAIL"}  ${n}${d ? "  — " + d : ""}`); if (!c) failed++; };
+
+      // CRC check helper (recompute over payload minus last 4).
+      function crc16(s){let c=0xffff;for(let i=0;i<s.length;i++){c^=s.charCodeAt(i)<<8;for(let j=0;j<8;j++){c=c&0x8000?(c<<1)^0x1021:c<<1;c&=0xffff;}}return c.toString(16).toUpperCase().padStart(4,"0");}
+
+      async function run() {
+        try { localStorage.removeItem("tuition_demo_state_v1"); localStorage.removeItem("tuition_demo_last_user"); } catch(_){}
+
+        // ---- PayNow payload ----
+        check("normaliseMobile 85182829 -> +6585182829", normaliseMobile("85182829") === "+6585182829");
+        const pl = buildPayNowPayload({ proxy: "85182829", amount: 50, reference: "Aiden 12 Jun", merchantName: "Ms Tutor" });
+        check("payload starts 000201", pl.startsWith("000201"));
+        check("payload has SG.PAYNOW", pl.includes("SG.PAYNOW"));
+        check("payload has +6585182829", pl.includes("+6585182829"));
+        check("payload has amount 50.00", pl.includes("5405" + "50.00"));
+        check("payload CRC valid", crc16(pl.slice(0,-4)) === pl.slice(-4), `${crc16(pl.slice(0,-4))} vs ${pl.slice(-4)}`);
+        // no-amount payload -> editable, no tag 54
+        const pl2 = buildPayNowPayload({ proxy: "85182829", reference: "x" });
+        check("no-amount payload omits tag 54", !/54\d\d\d/.test(pl2.replace(/5802SG/,"")) || !pl2.includes("5405"));
+        check("no-amount payload is amount-editable (03=1)", pl2.includes("03011"));
+
+        // ---- rate + settings ----
+        const p = new MockProvider(); await p.init();
+        await p.signIn("tutor@demo.app","demo");
+        // set rate on a seed student
+        const stu = (await p.listAllStudents())[0];
+        await p.setStudentRate(stu.id, 60);
+        const after = (await p.listAllStudents()).find(s => s.id === stu.id);
+        check("setStudentRate persists", after.rate === 60, String(after.rate));
+        // addStudent with rate
+        const ns = await p.addStudent({ name: "Rae", rate: 45 });
+        check("addStudent stores rate", (await p.listAllStudents()).find(s=>s.id===ns.id).rate === 45);
+        // payment settings
+        await p.savePaymentSettings({ payNowId: "85182829", payeeName: "Ms Tutor" });
+        const pay = await p.getPaymentSettings();
+        check("payment settings saved", pay.payNowId === "85182829" && pay.payeeName === "Ms Tutor");
+        // settings readable by parent
+        await p.signIn("parent.a@demo.app","demo");
+        const ppay = await p.getPaymentSettings();
+        check("parent can read payment settings", ppay.payNowId === "85182829");
+        // parent CANNOT change settings or rates
+        let blocked=false; try { await p.savePaymentSettings({ payNowId:"x" }); } catch { blocked=true; }
+        check("parent BLOCKED from saving settings", blocked);
+        let rblock=false; try { await p.setStudentRate(stu.id, 1); } catch { rblock=true; }
+        check("parent BLOCKED from setting rate", rblock);
+        // dashboard range includes rate + studentId
+        await p.signIn("tutor@demo.app","demo");
+        const range = await p.listLessonsInRange(new Date(0).toISOString(), new Date(Date.now()+1e12).toISOString());
+        check("listLessonsInRange includes studentId + rate", range.length>0 && "studentId" in range[0] && "rate" in range[0]);
+        // listMyStudents includes rate
+        const mine = await p.listMyStudents();
+        check("listMyStudents includes rate", mine.length>0 && "rate" in mine[0]);
+
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST6_OK" : "SELFTEST6_FAIL";
+      }
+      run().catch(e => { document.getElementById("out").textContent = "ERROR: " + e.stack; document.title = "SELFTEST6_FAIL"; });
+    </script>
+  </body>
+</html>

@@ -2,8 +2,9 @@
 // manual paid / unpaid flag per lesson. No money movement — just a view of the
 // schedule and a way to track who has paid.
 
-import { el, clear, mondayOf, addDays, fmtDateTime } from "../util.js";
+import { el, clear, mondayOf, addDays, fmtDateTime, fmtDate } from "../util.js";
 import { toast } from "./components.js";
+import { payNowButton } from "./paynow-ui.js";
 
 export class DashboardView {
   constructor(mount, provider, viewer) {
@@ -64,12 +65,18 @@ export class DashboardView {
     let lessons;
     try {
       lessons = await this.provider.listLessonsInRange(start.toISOString(), end.toISOString());
+      this._pay = await this.provider.getPaymentSettings();
     } catch (e) {
       clear(this.list);
       this.list.appendChild(el("div", { class: "error" }, e.message));
       return;
     }
     clear(this.list);
+
+    if (!this._pay || !this._pay.payNowId) {
+      this.summary.appendChild(el("p", { class: "muted dash__paynote" },
+        "💡 Add your PayNow number in Manage → Payment to show a pay button on each lesson."));
+    }
 
     // Summary stats.
     const totalMins = lessons.reduce((m, l) => m + (new Date(l.endISO) - new Date(l.startISO)) / 60000, 0);
@@ -118,14 +125,27 @@ export class DashboardView {
       }
     });
 
+    const actions = [pill];
+    // PayNow button (only when a number is set + the lesson isn't paid yet).
+    if (this._pay && this._pay.payNowId && !l.paid) {
+      const amount = l.rate && l.rate > 0 ? l.rate : 0;
+      actions.unshift(payNowButton("PayNow", () => ({
+        payNowId: this._pay.payNowId,
+        payeeName: this._pay.payeeName,
+        amount,
+        reference: `${l.studentName} ${fmtDate(l.startISO).replace(/^[A-Za-z]+,?\s*/, "")}`,
+      })));
+    }
+
     return el("div", { class: "req" }, [
       el("div", { class: "dash__row" }, [
         el("div", {}, [
           el("strong", {}, l.studentName),
           l.subject ? el("span", { class: "muted" }, ` · ${l.subject}`) : null,
+          l.rate ? el("span", { class: "muted" }, ` · $${l.rate}`) : null,
           el("div", { class: "req__meta muted" }, fmtDateTime(l.startISO)),
         ]),
-        pill,
+        el("div", { class: "dash__actions" }, actions),
       ]),
     ]);
   }

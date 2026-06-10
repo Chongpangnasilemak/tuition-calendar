@@ -43,6 +43,7 @@ export class MockProvider extends DataProvider {
     this._requests = [];
     this._invites = [];
     this._openSlots = []; // tutor-opened bookable slots
+    this._settings = { payNowId: "", payeeName: "" }; // payment settings
     this._current = null; // uid string or null
     this._authCbs = new Set();
     this._persist = true; // set false on first localStorage failure
@@ -82,6 +83,7 @@ export class MockProvider extends DataProvider {
         requests: this._requests,
         invites: this._invites,
         openSlots: this._openSlots,
+        settings: this._settings,
       };
       localStorage.setItem(STATE_KEY, JSON.stringify(blob));
     } catch (_) {
@@ -136,6 +138,7 @@ export class MockProvider extends DataProvider {
     this._requests = buildRequests(now);
     this._invites = [];
     this._openSlots = [];
+    this._settings = { payNowId: "", payeeName: "" };
   }
 
   /** Adopt a loaded blob into instance state. _users MUST be set before the
@@ -147,6 +150,9 @@ export class MockProvider extends DataProvider {
     this._requests = blob.requests;
     this._invites = blob.invites;
     this._openSlots = Array.isArray(blob.openSlots) ? blob.openSlots : [];
+    this._settings = blob.settings && typeof blob.settings === "object"
+      ? { payNowId: blob.settings.payNowId || "", payeeName: blob.settings.payeeName || "" }
+      : { payNowId: "", payeeName: "" };
     this._seedWeekISO = blob.seedWeekISO || null;
     this._current =
       blob.current && this._userByUid(blob.current) ? blob.current : null;
@@ -304,9 +310,9 @@ export class MockProvider extends DataProvider {
   async listMyStudents() {
     const v = this._requireViewer();
     if (v.role === "tutor") {
-      return Object.values(this._students).map((s) => ({ id: s.id, name: s.name }));
+      return Object.values(this._students).map((s) => ({ id: s.id, name: s.name, rate: s.rate || 0 }));
     }
-    return v.studentIds.map((id) => ({ id, name: this._students[id]?.name || id }));
+    return v.studentIds.map((id) => ({ id, name: this._students[id]?.name || id, rate: this._students[id]?.rate || 0 }));
   }
 
   // ---- schedule ----
@@ -573,7 +579,27 @@ export class MockProvider extends DataProvider {
   // ---- tutor: students & onboarding ----
   async listAllStudents() {
     this._requireTutor();
-    return Object.values(this._students).map((s) => ({ id: s.id, name: s.name }));
+    return Object.values(this._students).map((s) => ({ id: s.id, name: s.name, rate: s.rate || 0 }));
+  }
+
+  async setStudentRate(id, rate) {
+    this._requireTutor();
+    const s = this._students[id];
+    if (!s) throw new Error("Student not found.");
+    s.rate = Number(rate) || 0;
+    this._save();
+  }
+
+  async getPaymentSettings() {
+    this._requireViewer();
+    return { payNowId: this._settings.payNowId || "", payeeName: this._settings.payeeName || "" };
+  }
+
+  async savePaymentSettings({ payNowId, payeeName }) {
+    this._requireTutor();
+    this._settings = { payNowId: (payNowId || "").trim(), payeeName: (payeeName || "").trim() };
+    this._save();
+    return { ...this._settings };
   }
 
   async listLessonsInRange(startISO, endISO) {
@@ -581,8 +607,9 @@ export class MockProvider extends DataProvider {
     return this._lessons
       .filter((l) => l.status === "booked" && l.startISO >= startISO && l.startISO < endISO)
       .map((l) => ({
-        id: l.id, startISO: l.startISO, endISO: l.endISO,
+        id: l.id, startISO: l.startISO, endISO: l.endISO, studentId: l.studentId,
         studentName: l.studentName, subject: l.subject, paid: l.paid === true,
+        rate: this._students[l.studentId]?.rate || 0,
       }))
       .sort((a, b) => a.startISO.localeCompare(b.startISO));
   }
@@ -652,7 +679,7 @@ export class MockProvider extends DataProvider {
     return projectLessonForViewer(lesson, v);
   }
 
-  async addStudent({ name, subject }) {
+  async addStudent({ name, subject, rate }) {
     this._requireTutor();
     const clean = (name || "").trim();
     if (!clean) throw new Error("Student name is required.");
@@ -661,10 +688,11 @@ export class MockProvider extends DataProvider {
       id,
       name: clean,
       subject: (subject || "").trim(),
+      rate: Number(rate) || 0,
       parentUids: [],
     };
     this._save();
-    return { id, name: clean };
+    return { id, name: clean, rate: Number(rate) || 0 };
   }
 
   async removeStudent(studentId) {

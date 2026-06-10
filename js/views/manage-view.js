@@ -44,10 +44,12 @@ export class ManageView {
     this.body.appendChild(el("div", { class: "grid__loading" }, "Loading…"));
     let students = [];
     let invites = [];
+    let pay = { payNowId: "", payeeName: "" };
     try {
-      [students, invites] = await Promise.all([
+      [students, invites, pay] = await Promise.all([
         this.provider.listAllStudents(),
         this.provider.listInvites(),
+        this.provider.getPaymentSettings().catch(() => ({ payNowId: "", payeeName: "" })),
       ]);
     } catch (e) {
       clear(this.body);
@@ -56,14 +58,17 @@ export class ManageView {
     }
     clear(this.body);
 
-    // Students
+    // Payment (PayNow) settings.
+    this._renderPayment(pay);
+
+    // Students (with per-lesson rate for PayNow).
     this.body.appendChild(el("h2", { class: "manage__h2" }, `Students (${students.length})`));
     if (!students.length) {
       this.body.appendChild(el("p", { class: "muted" }, "No students yet. Add your first one above."));
     } else {
-      this.body.appendChild(
-        el("div", { class: "chips" }, students.map((s) => this._studentChip(s)))
-      );
+      const list = el("div", { class: "stulist" });
+      for (const s of students) list.appendChild(this._studentRow(s));
+      this.body.appendChild(list);
     }
 
     // Invites
@@ -77,12 +82,40 @@ export class ManageView {
     }
   }
 
-  _studentChip(s) {
-    const del = el(
-      "button",
-      { class: "chip__x", type: "button", title: `Remove ${s.name}`, "aria-label": `Remove ${s.name}` },
-      "×"
-    );
+  _renderPayment(pay) {
+    const id = el("input", { class: "field__input", type: "tel", placeholder: "e.g. 85182829 (PayNow mobile)", value: pay.payNowId || "" });
+    const nm = el("input", { class: "field__input", type: "text", placeholder: "Payee name (shown on QR)", value: pay.payeeName || "" });
+    const save = el("button", { class: "btn btn--primary btn--sm", type: "button" }, "Save");
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try {
+        await this.provider.savePaymentSettings({ payNowId: id.value.trim(), payeeName: nm.value.trim() });
+        toast("Payment details saved.", "success");
+        save.disabled = false;
+      } catch (e) { save.disabled = false; toast(e.message, "error"); }
+    });
+    this.body.appendChild(el("div", { class: "paysettings" }, [
+      el("h2", { class: "manage__h2" }, "Payment (PayNow / PayLah)"),
+      el("p", { class: "muted" }, "Parents will see a PayNow QR for the lesson amount. Payment goes straight to your bank — you mark it Paid when it arrives."),
+      el("div", { class: "form__row" }, [
+        el("label", { class: "field" }, [el("span", { class: "field__label" }, "PayNow mobile / UEN"), id]),
+        el("label", { class: "field" }, [el("span", { class: "field__label" }, "Payee name"), nm]),
+      ]),
+      el("div", {}, save),
+    ]));
+  }
+
+  _studentRow(s) {
+    const rate = el("input", { class: "field__input rateinput", type: "number", min: "0", step: "1", value: s.rate || 0, title: "Per-lesson rate (SGD)" });
+    let saveTimer = null;
+    rate.addEventListener("change", () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try { await this.provider.setStudentRate(s.id, Number(rate.value) || 0); toast(`${s.name}'s rate saved.`, "success"); }
+        catch (e) { toast(e.message, "error"); }
+      }, 50);
+    });
+    const del = el("button", { class: "chip__x", type: "button", title: `Remove ${s.name}` }, "×");
     del.addEventListener("click", async () => {
       if (!confirm(`Remove ${s.name}? This deletes their lessons and unlinks their parents. This can't be undone.`)) return;
       del.disabled = true;
@@ -90,12 +123,13 @@ export class ManageView {
         const res = await this.provider.removeStudent(s.id);
         toast(`Removed ${s.name}${res?.removedLessons ? ` and ${res.removedLessons} lesson(s)` : ""}.`, "success");
         this._load();
-      } catch (e) {
-        del.disabled = false;
-        toast(e.message, "error");
-      }
+      } catch (e) { del.disabled = false; toast(e.message, "error"); }
     });
-    return el("span", { class: "chip chip--removable" }, [s.name, del]);
+    return el("div", { class: "sturow" }, [
+      el("span", { class: "sturow__name" }, s.name),
+      el("span", { class: "sturow__rate" }, [el("span", { class: "muted" }, "$"), rate, el("span", { class: "muted" }, "/lesson")]),
+      del,
+    ]);
   }
 
   _inviteCard(inv) {
@@ -137,6 +171,7 @@ export class ManageView {
   _openAddStudent() {
     const name = el("input", { class: "field__input", type: "text", placeholder: "Student's name" });
     const subject = el("input", { class: "field__input", type: "text", placeholder: "Main subject (optional)" });
+    const rate = el("input", { class: "field__input", type: "number", min: "0", step: "1", placeholder: "0", value: "" });
     const submit = el("button", { class: "btn btn--primary", type: "button" }, "Add student");
 
     const { close } = modal(
@@ -145,6 +180,7 @@ export class ManageView {
         el("div", { class: "form" }, [
           el("label", { class: "field" }, [el("span", { class: "field__label" }, "Name"), name]),
           el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
+          el("label", { class: "field" }, [el("span", { class: "field__label" }, "Rate per lesson (SGD)"), rate]),
         ]),
       ],
       [submit]
@@ -156,7 +192,7 @@ export class ManageView {
       }
       submit.disabled = true;
       try {
-        await this.provider.addStudent({ name: name.value.trim(), subject: subject.value.trim() });
+        await this.provider.addStudent({ name: name.value.trim(), subject: subject.value.trim(), rate: Number(rate.value) || 0 });
         close();
         toast("Student added.", "success");
         this._load();

@@ -28,6 +28,7 @@ import {
 import { modal, toast } from "./components.js";
 import { describeRecurrence } from "../data/recurrence.js";
 import { downloadICS, googleCalendarUrl } from "../ics.js";
+import { payNowButton } from "./paynow-ui.js";
 
 // Grid bounds (local hours) and pixel scale.
 const DAY_START_H = 8; // 08:00
@@ -472,7 +473,7 @@ export class WeekView {
   // --------------------------------------------------------------------- //
   // Parent: lesson detail (add-to-calendar, shared notes, reschedule)
   // --------------------------------------------------------------------- //
-  _openParentLesson(lesson) {
+  async _openParentLesson(lesson) {
     const body = [
       el("div", { class: "ldetail" }, [
         el("div", { class: "ldetail__time" }, fmtTimeRange(lesson.startISO, lesson.endISO)),
@@ -487,6 +488,26 @@ export class WeekView {
       ]));
     }
     body.push(this._calendarRow(lesson));
+
+    // Payment: a PayNow/PayLah button if the tutor has set a number.
+    let pay = null, rate = 0;
+    try {
+      pay = await this.provider.getPaymentSettings();
+      const mine = await this.provider.listMyStudents();
+      rate = (mine.find((s) => s.id === lesson.studentId) || {}).rate || 0;
+    } catch (_) {}
+    if (pay && pay.payNowId) {
+      const payRow = el("div", { class: "calrow" }, [
+        el("span", { class: "field__label" }, "Payment"),
+        payNowButton("Pay with PayNow / PayLah", () => ({
+          payNowId: pay.payNowId,
+          payeeName: pay.payeeName,
+          amount: rate,
+          reference: `${lesson.studentName} ${fmtDate(lesson.startISO).replace(/^[A-Za-z]+,?\s*/, "")}`,
+        })),
+      ]);
+      body.push(payRow);
+    }
 
     const reschedule = el("button", { class: "btn btn--primary", type: "button" }, "Request reschedule");
     const { close } = modal(`${lesson.subject || "Lesson"}`, body, [reschedule]);

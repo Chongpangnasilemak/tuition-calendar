@@ -191,10 +191,23 @@ export class DataProvider {
 
   /**
    * Tutor only. Add a new student to the roster.
-   * @param {{name:string, subject?:string}} payload
+   * @param {{name:string, subject?:string, rate?:number}} payload
    * @returns {Promise<StudentRef>}
    */
   async addStudent(payload) { throw new Error("not implemented"); }
+
+  /** Tutor only. Set a student's per-lesson rate (SGD). @param {string} id @param {number} rate */
+  async setStudentRate(id, rate) { throw new Error("not implemented"); }
+
+  /**
+   * Payment settings (PayNow id + payee name). Readable by any signed-in user
+   * so parents can generate a PayNow QR.
+   * @returns {Promise<{payNowId:string, payeeName:string}>}
+   */
+  async getPaymentSettings() { throw new Error("not implemented"); }
+
+  /** Tutor only. Save PayNow settings. @param {{payNowId:string, payeeName?:string}} */
+  async savePaymentSettings(payload) { throw new Error("not implemented"); }
 
   /**
    * Tutor only. Remove a student and all of their lessons/bookings, and unlink

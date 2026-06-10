@@ -158,13 +158,13 @@ export class FirebaseProvider extends DataProvider {
     const db = this._db;
     if (v.role === "tutor") {
       const snap = await getDocs(collection(db, "students"));
-      return snap.docs.map((d) => ({ id: d.id, name: d.data().name }));
+      return snap.docs.map((d) => ({ id: d.id, name: d.data().name, rate: d.data().rate || 0 }));
     }
     // Parent: read each linked student doc (rules allow own children).
     const out = [];
     for (const id of v.studentIds) {
       const s = await getDoc(doc(db, "students", id));
-      if (s.exists()) out.push({ id, name: s.data().name });
+      if (s.exists()) out.push({ id, name: s.data().name, rate: s.data().rate || 0 });
     }
     return out;
   }
@@ -571,12 +571,40 @@ export class FirebaseProvider extends DataProvider {
   async listAllStudents() {
     this._requireTutor();
     const snap = await getDocs(collection(this._db, "students"));
-    return snap.docs.map((d) => ({ id: d.id, name: d.data().name }));
+    return snap.docs.map((d) => ({ id: d.id, name: d.data().name, rate: d.data().rate || 0 }));
+  }
+
+  async setStudentRate(id, rate) {
+    this._requireTutor();
+    await updateDoc(doc(this._db, "students", id), { rate: Number(rate) || 0 });
+  }
+
+  async getPaymentSettings() {
+    this._requireViewer();
+    try {
+      const s = await getDoc(doc(this._db, "settings", "payment"));
+      const d = s.exists() ? s.data() : {};
+      return { payNowId: d.payNowId || "", payeeName: d.payeeName || "" };
+    } catch (_) {
+      return { payNowId: "", payeeName: "" };
+    }
+  }
+
+  async savePaymentSettings({ payNowId, payeeName }) {
+    this._requireTutor();
+    const out = { payNowId: (payNowId || "").trim(), payeeName: (payeeName || "").trim() };
+    await setDoc(doc(this._db, "settings", "payment"), out);
+    return out;
   }
 
   async listLessonsInRange(startISO, endISO) {
     this._requireTutor();
     const db = this._db;
+    // Student rates for the join.
+    const studentsSnap = await getDocs(collection(db, "students"));
+    const rates = {};
+    studentsSnap.docs.forEach((d) => { rates[d.id] = d.data().rate || 0; });
+
     const snap = await getDocs(query(
       collection(db, "lessons"),
       where("start", ">=", Timestamp.fromDate(new Date(startISO))),
@@ -584,8 +612,9 @@ export class FirebaseProvider extends DataProvider {
     ));
     return snap.docs
       .map((d) => { const x = d.data(); return {
-        id: d.id, startISO: tsToISO(x.start), endISO: tsToISO(x.end),
+        id: d.id, startISO: tsToISO(x.start), endISO: tsToISO(x.end), studentId: x.studentId,
         studentName: x.studentName, subject: x.subject, paid: x.paid === true,
+        rate: rates[x.studentId] || 0,
         _status: x.status || "booked",
       }; })
       .filter((l) => l._status === "booked")
@@ -673,7 +702,7 @@ export class FirebaseProvider extends DataProvider {
     };
   }
 
-  async addStudent({ name, subject }) {
+  async addStudent({ name, subject, rate }) {
     this._requireTutor();
     const clean = (name || "").trim();
     if (!clean) throw new Error("Student name is required.");
@@ -681,10 +710,11 @@ export class FirebaseProvider extends DataProvider {
     await setDoc(ref, {
       name: clean,
       subject: (subject || "").trim(),
+      rate: Number(rate) || 0,
       parentUids: [],
       createdAt: serverTimestamp(),
     });
-    return { id: ref.id, name: clean };
+    return { id: ref.id, name: clean, rate: Number(rate) || 0 };
   }
 
   async removeStudent(studentId) {

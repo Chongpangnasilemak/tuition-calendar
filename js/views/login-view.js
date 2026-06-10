@@ -8,6 +8,26 @@
 import { el, clear } from "../util.js";
 import { toast } from "./components.js";
 
+/**
+ * Lightweight password strength heuristic (no library). Returns a 0..4 score,
+ * a label, and a fill percentage for the meter. Not security-grade, just
+ * helpful guidance to nudge parents away from weak passwords.
+ */
+function scorePassword(pw) {
+  const p = pw || "";
+  let s = 0;
+  if (p.length >= 6) s++;
+  if (p.length >= 10) s++;
+  if (/[a-z]/.test(p) && /[A-Z]/.test(p)) s++;
+  if (/\d/.test(p)) s++;
+  if (/[^A-Za-z0-9]/.test(p)) s++;
+  // common-weak penalty
+  if (/^(password|123456|qwerty|111111|abc123)/i.test(p)) s = 0;
+  s = Math.max(0, Math.min(4, s));
+  const labels = ["Very weak", "Weak", "Fair", "Good", "Strong"];
+  return { score: s, label: labels[s], pct: (s / 4) * 100 };
+}
+
 export class LoginView {
   /**
    * @param {HTMLElement} mount
@@ -138,10 +158,38 @@ export class LoginView {
         wrap.appendChild(el("div", { class: "login__divider" }, "or with email"));
       }
 
+      // Sign-up extras: a strength meter + a confirm-password field so a typo
+      // can't silently lock a new parent out of their account.
+      const confirm = el("input", { class: "field__input", type: "password", placeholder: "Re-enter password", autocomplete: "new-password" });
+      const meterBar = el("div", { class: "pwmeter__bar" });
+      const meterLabel = el("span", { class: "pwmeter__label muted" }, "");
+      const meter = el("div", { class: "pwmeter" }, [el("div", { class: "pwmeter__track" }, meterBar), meterLabel]);
+      const matchMsg = el("div", { class: "pwmatch muted" }, "");
+
+      const refreshStrength = () => {
+        const { score, label, pct } = scorePassword(pass.value);
+        meterBar.style.width = pct + "%";
+        meterBar.className = "pwmeter__bar pwmeter__bar--" + score;
+        meterLabel.textContent = pass.value ? label : "";
+      };
+      const refreshMatch = () => {
+        if (!confirm.value) { matchMsg.textContent = ""; matchMsg.className = "pwmatch muted"; return; }
+        const ok = confirm.value === pass.value;
+        matchMsg.textContent = ok ? "✓ Passwords match" : "✗ Passwords don't match";
+        matchMsg.className = "pwmatch " + (ok ? "pwmatch--ok" : "pwmatch--bad");
+      };
+      pass.addEventListener("input", () => { refreshStrength(); refreshMatch(); });
+      confirm.addEventListener("input", refreshMatch);
+
       const fields = [];
       if (isSignup) fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Name"), name]));
       fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Email"), email]));
       fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Password"), pass]));
+      if (isSignup) {
+        fields.push(meter);
+        fields.push(el("label", { class: "field" }, [el("span", { class: "field__label" }, "Confirm password"), confirm]));
+        fields.push(matchMsg);
+      }
       fields.push(submit);
 
       const form = el("form", { class: "form" }, fields);
@@ -150,6 +198,11 @@ export class LoginView {
         if (!email.value.trim() || !pass.value) {
           toast("Enter your email and password.", "error");
           return;
+        }
+        if (isSignup) {
+          if (pass.value.length < 6) { toast("Password should be at least 6 characters.", "error"); return; }
+          if (pass.value !== confirm.value) { toast("Passwords don't match — please re-enter.", "error"); confirm.focus(); return; }
+          if (scorePassword(pass.value).score < 1) { toast("Please choose a slightly stronger password.", "error"); return; }
         }
         submit.disabled = true;
         try {
