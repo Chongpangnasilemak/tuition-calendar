@@ -196,8 +196,12 @@ export class DataProvider {
    */
   async addStudent(payload) { throw new Error("not implemented"); }
 
-  /** Tutor only. Set a student's per-lesson rate (SGD). @param {string} id @param {number} rate */
-  async setStudentRate(id, rate) { throw new Error("not implemented"); }
+  /**
+   * Tutor only. Set a student's rate (SGD) and pricing mode.
+   * @param {string} id @param {number} rate
+   * @param {'hourly'|'perLesson'} [rateType='perLesson']
+   */
+  async setStudentRate(id, rate, rateType) { throw new Error("not implemented"); }
 
   /**
    * Payment settings (PayNow id + payee name). Readable by any signed-in user
@@ -238,4 +242,66 @@ export class DataProvider {
    * @returns {Promise<{studentId:string, studentName:string}>}
    */
   async redeemInvite(code) { throw new Error("not implemented"); }
+
+  // ---- invoices (monthly e-invoices) ----
+  /**
+   * @typedef {Object} InvoiceLine
+   * @property {string}  lessonId       FK -> lesson; "" for a manual line
+   * @property {string}  dateISO        lesson start
+   * @property {string}  startTime      "HH:mm" local
+   * @property {string}  endTime        "HH:mm" local
+   * @property {number}  durationHours  rounded to 0.25
+   * @property {number}  amount         per-line fee (round2)
+   * @property {boolean} paid
+   * @property {string}  remarks
+   * @property {boolean} included
+   */
+  /**
+   * @typedef {Object} Invoice
+   * @property {string} id
+   * @property {string} studentId
+   * @property {string} studentName
+   * @property {string} invoiceNo        "" while draft
+   * @property {string} periodMonth      "YYYY-MM"
+   * @property {string=} invoiceDateISO
+   * @property {string} billFrom
+   * @property {string} billToParent
+   * @property {string} billToChild
+   * @property {'hourly'|'perLesson'} rateType
+   * @property {number} rate
+   * @property {InvoiceLine[]} lineItems
+   * @property {number} additionalMaterials
+   * @property {string} additionalMaterialsLabel
+   * @property {{totalHours:number,lessonCount:number,totalLessonFee:number,additionalMaterials:number,totalPayable:number}} totals
+   * @property {string} payNowId
+   * @property {'draft'|'issued'|'paid'} status
+   * @property {string=} createdISO @property {string=} issuedISO @property {string=} paidISO
+   */
+
+  /** Tutor only. Build (not persist) a draft invoice for one student for a
+   *  calendar month. @param {string} studentId @param {string} monthISO ("YYYY-MM" or any ISO in the month)
+   *  @returns {Promise<Invoice>} */
+  async buildMonthlyInvoiceDraft(studentId, monthISO) { throw new Error("not implemented"); }
+
+  /** Tutor only. Create (empty id) or update an invoice. Totals are recomputed
+   *  in-provider; client totals are ignored. @param {Invoice} draft @returns {Promise<Invoice>} */
+  async saveInvoice(draft) { throw new Error("not implemented"); }
+
+  /** Tutor: all invoices. Parent: own children's issued/paid invoices only.
+   *  @returns {Promise<Invoice[]>} */
+  async listInvoices() { throw new Error("not implemented"); }
+
+  /** Tutor: any. Parent: own child's issued/paid only, else null. @param {string} id @returns {Promise<Invoice|null>} */
+  async getInvoice(id) { throw new Error("not implemented"); }
+
+  /** Tutor only. draft -> issued: snapshot lines, assign invoiceNo, freeze totals.
+   *  @param {string} id @returns {Promise<Invoice>} */
+  async issueInvoice(id) { throw new Error("not implemented"); }
+
+  /** Tutor only. Mark whole invoice paid/unpaid (paid also flags its lessons).
+   *  @param {string} id @param {boolean} paid @returns {Promise<Invoice>} */
+  async setInvoicePaid(id, paid) { throw new Error("not implemented"); }
+
+  /** Tutor only. Delete an invoice (does not change lessons' paid flags). @param {string} id */
+  async deleteInvoice(id) { throw new Error("not implemented"); }
 }

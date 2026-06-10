@@ -106,15 +106,19 @@ export class ManageView {
   }
 
   _studentRow(s) {
-    const rate = el("input", { class: "field__input rateinput", type: "number", min: "0", step: "1", value: s.rate || 0, title: "Per-lesson rate (SGD)" });
+    const rate = el("input", { class: "field__input rateinput", type: "number", min: "0", step: "1", value: s.rate || 0, title: "Rate (SGD)" });
+    const rtSel = el("select", { class: "field__input ratetype" }, [
+      el("option", { value: "perLesson", ...(s.rateType !== "hourly" ? { selected: true } : {}) }, "/ lesson"),
+      el("option", { value: "hourly", ...(s.rateType === "hourly" ? { selected: true } : {}) }, "/ hour"),
+    ]);
+    const save = async () => {
+      try { await this.provider.setStudentRate(s.id, Number(rate.value) || 0, rtSel.value); toast(`${s.name}'s rate saved.`, "success"); }
+      catch (e) { toast(e.message, "error"); }
+    };
     let saveTimer = null;
-    rate.addEventListener("change", () => {
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(async () => {
-        try { await this.provider.setStudentRate(s.id, Number(rate.value) || 0); toast(`${s.name}'s rate saved.`, "success"); }
-        catch (e) { toast(e.message, "error"); }
-      }, 50);
-    });
+    const debounced = () => { clearTimeout(saveTimer); saveTimer = setTimeout(save, 50); };
+    rate.addEventListener("change", debounced);
+    rtSel.addEventListener("change", debounced);
     const del = el("button", { class: "chip__x", type: "button", title: `Remove ${s.name}` }, "×");
     del.addEventListener("click", async () => {
       if (!confirm(`Remove ${s.name}? This deletes their lessons and unlinks their parents. This can't be undone.`)) return;
@@ -127,7 +131,7 @@ export class ManageView {
     });
     return el("div", { class: "sturow" }, [
       el("span", { class: "sturow__name" }, s.name),
-      el("span", { class: "sturow__rate" }, [el("span", { class: "muted" }, "$"), rate, el("span", { class: "muted" }, "/lesson")]),
+      el("span", { class: "sturow__rate" }, [el("span", { class: "muted" }, "$"), rate, rtSel]),
       del,
     ]);
   }
@@ -172,6 +176,10 @@ export class ManageView {
     const name = el("input", { class: "field__input", type: "text", placeholder: "Student's name" });
     const subject = el("input", { class: "field__input", type: "text", placeholder: "Main subject (optional)" });
     const rate = el("input", { class: "field__input", type: "number", min: "0", step: "1", placeholder: "0", value: "" });
+    const rtSel = el("select", { class: "field__input" }, [
+      el("option", { value: "perLesson" }, "Per lesson"),
+      el("option", { value: "hourly" }, "Per hour"),
+    ]);
     const submit = el("button", { class: "btn btn--primary", type: "button" }, "Add student");
 
     const { close } = modal(
@@ -180,7 +188,10 @@ export class ManageView {
         el("div", { class: "form" }, [
           el("label", { class: "field" }, [el("span", { class: "field__label" }, "Name"), name]),
           el("label", { class: "field" }, [el("span", { class: "field__label" }, "Subject"), subject]),
-          el("label", { class: "field" }, [el("span", { class: "field__label" }, "Rate per lesson (SGD)"), rate]),
+          el("div", { class: "form__row" }, [
+            el("label", { class: "field" }, [el("span", { class: "field__label" }, "Rate (SGD)"), rate]),
+            el("label", { class: "field" }, [el("span", { class: "field__label" }, "Charged"), rtSel]),
+          ]),
         ]),
       ],
       [submit]
@@ -192,7 +203,7 @@ export class ManageView {
       }
       submit.disabled = true;
       try {
-        await this.provider.addStudent({ name: name.value.trim(), subject: subject.value.trim(), rate: Number(rate.value) || 0 });
+        await this.provider.addStudent({ name: name.value.trim(), subject: subject.value.trim(), rate: Number(rate.value) || 0, rateType: rtSel.value });
         close();
         toast("Student added.", "success");
         this._load();

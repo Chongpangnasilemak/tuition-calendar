@@ -5,6 +5,7 @@
 import { el, clear, mondayOf, addDays, fmtDateTime, fmtDate } from "../util.js";
 import { toast } from "./components.js";
 import { payNowButton } from "./paynow-ui.js";
+import { durationHours, lineAmount } from "../data/invoice-math.js";
 
 export class DashboardView {
   constructor(mount, provider, viewer) {
@@ -125,10 +126,14 @@ export class DashboardView {
       }
     });
 
+    // Rate-type-aware amount (hourly: hours×rate, else flat per-lesson rate).
+    const amount = l.rateType === "hourly"
+      ? lineAmount(durationHours(l.startISO, l.endISO), l.rate, "hourly")
+      : (l.rate && l.rate > 0 ? l.rate : 0);
+
     const actions = [pill];
     // PayNow button (only when a number is set + the lesson isn't paid yet).
     if (this._pay && this._pay.payNowId && !l.paid) {
-      const amount = l.rate && l.rate > 0 ? l.rate : 0;
       actions.unshift(payNowButton("PayNow", () => ({
         payNowId: this._pay.payNowId,
         payeeName: this._pay.payeeName,
@@ -142,7 +147,8 @@ export class DashboardView {
         el("div", {}, [
           el("strong", {}, l.studentName),
           l.subject ? el("span", { class: "muted" }, ` · ${l.subject}`) : null,
-          l.rate ? el("span", { class: "muted" }, ` · $${l.rate}`) : null,
+          l.rate ? el("span", { class: "muted" }, ` · $${l.rate}${l.rateType === "hourly" ? "/hr" : ""}`) : null,
+          (l.rateType === "hourly" && amount) ? el("span", { class: "muted" }, ` = $${amount.toFixed(2)}`) : null,
           el("div", { class: "req__meta muted" }, fmtDateTime(l.startISO)),
         ]),
         el("div", { class: "dash__actions" }, actions),

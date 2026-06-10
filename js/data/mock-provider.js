@@ -19,6 +19,10 @@ import { DataProvider } from "./provider.js";
 import { projectLessonForViewer } from "./anonymize.js";
 import { expandRecurrence, wallClockShift, applyWallClockShift } from "./recurrence.js";
 import {
+  computeTotals, durationHours, lineAmount, hhmm,
+  monthKey, monthBounds, invoiceNumber,
+} from "./invoice-math.js";
+import {
   USERS,
   STUDENTS,
   buildLessons,
@@ -28,7 +32,7 @@ import {
 
 const LAST_USER_KEY = "tuition_demo_last_user"; // legacy fallback key
 const STATE_KEY = "tuition_demo_state_v1";      // versioned full-state blob
-const STATE_VERSION = 1;                        // bump when seed/shape changes
+const STATE_VERSION = 2;                        // bump when seed/shape changes
 
 // Canonical seed accounts shown as quick-login buttons (so synthetic invite
 // parents created at runtime don't pollute the login screen).
@@ -44,6 +48,7 @@ export class MockProvider extends DataProvider {
     this._invites = [];
     this._openSlots = []; // tutor-opened bookable slots
     this._settings = { payNowId: "", payeeName: "" }; // payment settings
+    this._invoices = []; // monthly e-invoices
     this._current = null; // uid string or null
     this._authCbs = new Set();
     this._persist = true; // set false on first localStorage failure
@@ -84,6 +89,7 @@ export class MockProvider extends DataProvider {
         invites: this._invites,
         openSlots: this._openSlots,
         settings: this._settings,
+        invoices: this._invoices,
       };
       localStorage.setItem(STATE_KEY, JSON.stringify(blob));
     } catch (_) {
@@ -110,7 +116,8 @@ export class MockProvider extends DataProvider {
         typeof blob.students !== "object" ||
         !Array.isArray(blob.lessons) ||
         !Array.isArray(blob.requests) ||
-        !Array.isArray(blob.invites)
+        !Array.isArray(blob.invites) ||
+        !Array.isArray(blob.invoices)
       ) {
         return null;
       }
@@ -139,6 +146,7 @@ export class MockProvider extends DataProvider {
     this._invites = [];
     this._openSlots = [];
     this._settings = { payNowId: "", payeeName: "" };
+    this._invoices = [];
   }
 
   /** Adopt a loaded blob into instance state. _users MUST be set before the
@@ -153,6 +161,7 @@ export class MockProvider extends DataProvider {
     this._settings = blob.settings && typeof blob.settings === "object"
       ? { payNowId: blob.settings.payNowId || "", payeeName: blob.settings.payeeName || "" }
       : { payNowId: "", payeeName: "" };
+    this._invoices = Array.isArray(blob.invoices) ? blob.invoices : [];
     this._seedWeekISO = blob.seedWeekISO || null;
     this._current =
       blob.current && this._userByUid(blob.current) ? blob.current : null;
@@ -310,9 +319,9 @@ export class MockProvider extends DataProvider {
   async listMyStudents() {
     const v = this._requireViewer();
     if (v.role === "tutor") {
-      return Object.values(this._students).map((s) => ({ id: s.id, name: s.name, rate: s.rate || 0 }));
+      return Object.values(this._students).map((s) => ({ id: s.id, name: s.name, rate: s.rate || 0, rateType: rtype(s.rateType) }));
     }
-    return v.studentIds.map((id) => ({ id, name: this._students[id]?.name || id, rate: this._students[id]?.rate || 0 }));
+    return v.studentIds.map((id) => ({ id, name: this._students[id]?.name || id, rate: this._students[id]?.rate || 0, rateType: rtype(this._students[id]?.rateType) }));
   }
 
   // ---- schedule ----
@@ -579,14 +588,15 @@ export class MockProvider extends DataProvider {
   // ---- tutor: students & onboarding ----
   async listAllStudents() {
     this._requireTutor();
-    return Object.values(this._students).map((s) => ({ id: s.id, name: s.name, rate: s.rate || 0 }));
+    return Object.values(this._students).map((s) => ({ id: s.id, name: s.name, rate: s.rate || 0, rateType: rtype(s.rateType) }));
   }
 
-  async setStudentRate(id, rate) {
+  async setStudentRate(id, rate, rateType = "perLesson") {
     this._requireTutor();
     const s = this._students[id];
     if (!s) throw new Error("Student not found.");
     s.rate = Number(rate) || 0;
+    s.rateType = rtype(rateType);
     this._save();
   }
 
@@ -610,6 +620,7 @@ export class MockProvider extends DataProvider {
         id: l.id, startISO: l.startISO, endISO: l.endISO, studentId: l.studentId,
         studentName: l.studentName, subject: l.subject, paid: l.paid === true,
         rate: this._students[l.studentId]?.rate || 0,
+        rateType: rtype(this._students[l.studentId]?.rateType),
       }))
       .sort((a, b) => a.startISO.localeCompare(b.startISO));
   }
@@ -679,7 +690,7 @@ export class MockProvider extends DataProvider {
     return projectLessonForViewer(lesson, v);
   }
 
-  async addStudent({ name, subject, rate }) {
+  async addStudent({ name, subject, rate, rateType }) {
     this._requireTutor();
     const clean = (name || "").trim();
     if (!clean) throw new Error("Student name is required.");
@@ -689,10 +700,11 @@ export class MockProvider extends DataProvider {
       name: clean,
       subject: (subject || "").trim(),
       rate: Number(rate) || 0,
+      rateType: rtype(rateType),
       parentUids: [],
     };
     this._save();
-    return { id, name: clean, rate: Number(rate) || 0 };
+    return { id, name: clean, rate: Number(rate) || 0, rateType: rtype(rateType) };
   }
 
   async removeStudent(studentId) {
@@ -773,6 +785,155 @@ export class MockProvider extends DataProvider {
     return { studentId: invite.studentId, studentName: student?.name || invite.studentId };
   }
 
+  // ---- invoices ----
+  async buildMonthlyInvoiceDraft(studentId, monthISO) {
+    this._requireTutor();
+    const student = this._students[studentId];
+    if (!student) throw new Error("Unknown student.");
+    const key = monthKey(monthISO);
+    const { startISO, endISO } = monthBounds(key);
+    const rateType = rtype(student.rateType);
+    const rate = Number(student.rate) || 0;
+
+    const lessons = this._lessons
+      .filter((l) => l.status === "booked" && l.studentId === studentId && l.startISO >= startISO && l.startISO < endISO)
+      .sort((a, b) => a.startISO.localeCompare(b.startISO));
+
+    const lineItems = lessons.map((l) => {
+      const dur = durationHours(l.startISO, l.endISO);
+      return {
+        lessonId: l.id, dateISO: l.startISO, startTime: hhmm(l.startISO), endTime: hhmm(l.endISO),
+        durationHours: dur, amount: lineAmount(dur, rate, rateType),
+        paid: l.paid === true, remarks: l.paid ? "Paid" : "", included: true,
+      };
+    });
+
+    const inv = {
+      id: "", studentId, studentName: student.name, invoiceNo: "", periodMonth: key,
+      periodStartISO: startISO, periodEndISO: endISO, invoiceDateISO: null,
+      billFrom: this._settings.payeeName || "", billToParent: "", billToChild: student.name,
+      rateType, rate, lineItems, additionalMaterials: 0, additionalMaterialsLabel: "Additional Materials",
+      payNowId: this._settings.payNowId || "", status: "draft",
+      createdISO: new Date().toISOString(), issuedISO: null, paidISO: null,
+    };
+    inv.totals = computeTotals(inv);
+    return inv;
+  }
+
+  async saveInvoice(draft) {
+    this._requireTutor();
+    if (!draft || !this._students[draft.studentId]) throw new Error("Unknown student.");
+    const id = draft.id || "inv-" + rid();
+    const existing = this._invoices.find((i) => i.id === id);
+    // Issued/paid invoices are immutable except status/paid/remarks.
+    if (existing && existing.status !== "draft") {
+      throw new Error("This invoice has been issued and can't be edited.");
+    }
+    const inv = {
+      id,
+      studentId: draft.studentId,
+      studentName: this._students[draft.studentId].name,
+      invoiceNo: (draft.invoiceNo || "").trim(),
+      periodMonth: draft.periodMonth,
+      periodStartISO: draft.periodStartISO, periodEndISO: draft.periodEndISO,
+      invoiceDateISO: draft.invoiceDateISO || null,
+      billFrom: (draft.billFrom || this._settings.payeeName || "").trim(),
+      billToParent: (draft.billToParent || "").trim(),
+      billToChild: this._students[draft.studentId].name,
+      rateType: rtype(draft.rateType), rate: Number(draft.rate) || 0,
+      lineItems: (draft.lineItems || []).map((l) => ({
+        lessonId: l.lessonId || "", dateISO: l.dateISO, startTime: l.startTime, endTime: l.endTime,
+        durationHours: Number(l.durationHours) || 0, amount: Number(l.amount) || 0,
+        paid: l.paid === true, remarks: (l.remarks || "").trim(), included: l.included !== false,
+      })),
+      additionalMaterials: Math.max(0, Number(draft.additionalMaterials) || 0),
+      additionalMaterialsLabel: (draft.additionalMaterialsLabel || "Additional Materials").trim(),
+      payNowId: (draft.payNowId || this._settings.payNowId || "").trim(),
+      status: existing ? existing.status : "draft",
+      createdISO: existing ? existing.createdISO : new Date().toISOString(),
+      issuedISO: existing ? existing.issuedISO : null,
+      paidISO: existing ? existing.paidISO : null,
+    };
+    inv.totals = computeTotals(inv); // never trust client totals
+    if (existing) Object.assign(existing, inv);
+    else this._invoices.push(inv);
+    this._save();
+    return JSON.parse(JSON.stringify(inv));
+  }
+
+  async listInvoices() {
+    const v = this._requireViewer();
+    const visible = this._invoices.filter((i) =>
+      v.role === "tutor" || (v.studentIds.includes(i.studentId) && (i.status === "issued" || i.status === "paid"))
+    );
+    return visible
+      .map((i) => JSON.parse(JSON.stringify(i)))
+      .sort((a, b) => b.periodMonth.localeCompare(a.periodMonth) || (b.createdISO || "").localeCompare(a.createdISO || ""));
+  }
+
+  async getInvoice(id) {
+    const v = this._requireViewer();
+    const inv = this._invoices.find((i) => i.id === id);
+    if (!inv) return null;
+    if (v.role !== "tutor" && !(v.studentIds.includes(inv.studentId) && inv.status !== "draft")) return null;
+    return JSON.parse(JSON.stringify(inv));
+  }
+
+  async issueInvoice(id) {
+    this._requireTutor();
+    const inv = this._invoices.find((i) => i.id === id);
+    if (!inv) throw new Error("Invoice not found.");
+    if (inv.status === "paid") throw new Error("A paid invoice can't be re-issued.");
+    if (inv.status === "issued") return JSON.parse(JSON.stringify(inv)); // idempotent
+    inv.totals = computeTotals(inv);
+    if (!(inv.totals.totalPayable > 0)) throw new Error("Nothing payable — can't issue a $0 invoice.");
+    // Assign invoice number (unless the tutor typed one) — counter scoped to month+payee.
+    if (!inv.invoiceNo) {
+      const prefix = inv.periodMonth;
+      const nn = this._invoices.filter((i) => i.periodMonth === prefix && i.invoiceNo)
+        .map((i) => parseInt(i.invoiceNo.split("-").pop(), 10) || 0)
+        .reduce((m, n) => Math.max(m, n), 0) + 1;
+      inv.invoiceNo = invoiceNumber(inv.billFrom, inv.periodMonth, nn);
+    }
+    inv.invoiceDateISO = inv.invoiceDateISO || new Date().toISOString();
+    inv.issuedISO = new Date().toISOString();
+    inv.status = "issued";
+    this._save();
+    return JSON.parse(JSON.stringify(inv));
+  }
+
+  async setInvoicePaid(id, paid) {
+    this._requireTutor();
+    const inv = this._invoices.find((i) => i.id === id);
+    if (!inv) throw new Error("Invoice not found.");
+    if (paid) {
+      inv.status = "paid";
+      inv.paidISO = new Date().toISOString();
+      for (const line of inv.lineItems) {
+        if (line.lessonId) {
+          const l = this._lessons.find((x) => x.id === line.lessonId);
+          if (l) l.paid = true; // null-guarded
+        }
+        line.paid = true;
+        if (!line.remarks) line.remarks = "Paid";
+      }
+    } else {
+      // Revert status only; leave lesson flags untouched.
+      inv.status = "issued";
+      inv.paidISO = null;
+    }
+    this._save();
+    return JSON.parse(JSON.stringify(inv));
+  }
+
+  async deleteInvoice(id) {
+    this._requireTutor();
+    const i = this._invoices.findIndex((x) => x.id === id);
+    if (i === -1) throw new Error("Invoice not found.");
+    this._invoices.splice(i, 1);
+    this._save();
+  }
+
   _requireTutor() {
     const v = this._requireViewer();
     if (v.role !== "tutor") throw new Error("Tutor only.");
@@ -787,6 +948,9 @@ export class MockProvider extends DataProvider {
 }
 
 // short random ids / codes for the demo
+function rtype(t) {
+  return t === "hourly" ? "hourly" : "perLesson";
+}
 function rid() {
   return Math.random().toString(36).slice(2, 9);
 }

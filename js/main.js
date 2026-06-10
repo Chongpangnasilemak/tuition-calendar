@@ -84,6 +84,7 @@ function renderShell(provider, router, viewer) {
   const navItems = [
     navLink("#/week", "Calendar"),
     navLink("#/requests", viewer.role === "tutor" ? "Requests" : "My requests"),
+    navLink("#/invoices", "Invoices"),
   ];
   if (viewer.role === "tutor") {
     navItems.push(navLink("#/dashboard", "Dashboard"));

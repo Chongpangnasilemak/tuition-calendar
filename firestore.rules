@@ -206,6 +206,30 @@ service cloud.firestore {
       // parents: no client access (the Cloud Function handles redemption)
     }
 
+    // ---- invoices: PRIVATE monthly billing, 1 doc per (student, month).
+    //      Authority = isParentOf(resource.data.studentId), the SAME single
+    //      anchor as lessons. Parents read ONLY their own child's invoices AND
+    //      only when ISSUED/PAID (drafts stay tutor-private). The read predicate
+    //      `status in ['issued','paid']` is IDENTICAL to the parent list query,
+    //      so the query is admissible (rules are not filters). All writes are
+    //      tutor-only, so totals/lineItems can't be forged by a parent. ----
+    match /invoices/{invoiceId} {
+      allow read: if isTutor()
+        || (isParentOf(resource.data.studentId)
+            && resource.data.status in ['issued', 'paid']);
+
+      allow create, update: if isTutor()
+        && exists(/databases/$(database)/documents/students/$(request.resource.data.studentId));
+
+      allow delete: if isTutor();
+    }
+
+    // ---- counters: tutor-only invoice-number sequence docs. Read+written only
+    //      inside the issueInvoice transaction. ----
+    match /counters/{counterId} {
+      allow read, write: if isTutor();
+    }
+
     // -------------------------- Default deny ---------------------------------
     match /{document=**} { allow read, write: if false; }
   }

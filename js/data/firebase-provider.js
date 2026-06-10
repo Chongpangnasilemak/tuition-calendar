@@ -53,6 +53,10 @@ import {
 
 import { DataProvider } from "./provider.js";
 import { expandRecurrence, wallClockShift, applyWallClockShift } from "./recurrence.js";
+import {
+  computeTotals, durationHours, lineAmount, hhmm,
+  monthKey, monthBounds, invoiceNumber,
+} from "./invoice-math.js";
 
 export class FirebaseProvider extends DataProvider {
   constructor(config) {
@@ -197,13 +201,13 @@ export class FirebaseProvider extends DataProvider {
     const db = this._db;
     if (v.role === "tutor") {
       const snap = await getDocs(collection(db, "students"));
-      return snap.docs.map((d) => ({ id: d.id, name: d.data().name, rate: d.data().rate || 0 }));
+      return snap.docs.map((d) => ({ id: d.id, name: d.data().name, rate: d.data().rate || 0, rateType: rtype(d.data().rateType) }));
     }
     // Parent: read each linked student doc (rules allow own children).
     const out = [];
     for (const id of v.studentIds) {
       const s = await getDoc(doc(db, "students", id));
-      if (s.exists()) out.push({ id, name: s.data().name, rate: s.data().rate || 0 });
+      if (s.exists()) out.push({ id, name: s.data().name, rate: s.data().rate || 0, rateType: rtype(s.data().rateType) });
     }
     return out;
   }
@@ -610,12 +614,33 @@ export class FirebaseProvider extends DataProvider {
   async listAllStudents() {
     this._requireTutor();
     const snap = await getDocs(collection(this._db, "students"));
-    return snap.docs.map((d) => ({ id: d.id, name: d.data().name, rate: d.data().rate || 0 }));
+    return snap.docs.map((d) => ({ id: d.id, name: d.data().name, rate: d.data().rate || 0, rateType: rtype(d.data().rateType) }));
   }
 
-  async setStudentRate(id, rate) {
+  async setStudentRate(id, rate, rateType = "perLesson") {
     this._requireTutor();
-    await updateDoc(doc(this._db, "students", id), { rate: Number(rate) || 0 });
+    await updateDoc(doc(this._db, "students", id), { rate: Number(rate) || 0, rateType: rtype(rateType) });
+  }
+
+  /** Booked lessons in [startISO,endISO) joined with each student's rate+rateType. */
+  async _lessonsWithRates(startISO, endISO) {
+    const db = this._db;
+    const studentsSnap = await getDocs(collection(db, "students"));
+    const rates = {};
+    studentsSnap.docs.forEach((d) => { rates[d.id] = { rate: d.data().rate || 0, rateType: rtype(d.data().rateType) }; });
+    const snap = await getDocs(query(
+      collection(db, "lessons"),
+      where("start", ">=", Timestamp.fromDate(new Date(startISO))),
+      where("start", "<", Timestamp.fromDate(new Date(endISO)))
+    ));
+    return snap.docs
+      .map((d) => { const x = d.data(); const r = rates[x.studentId] || { rate: 0, rateType: "perLesson" }; return {
+        id: d.id, startISO: tsToISO(x.start), endISO: tsToISO(x.end), studentId: x.studentId,
+        studentName: x.studentName, subject: x.subject, paid: x.paid === true,
+        rate: r.rate, rateType: r.rateType, _status: x.status || "booked",
+      }; })
+      .filter((l) => l._status === "booked")
+      .sort((a, b) => a.startISO.localeCompare(b.startISO));
   }
 
   async getPaymentSettings() {
@@ -638,26 +663,8 @@ export class FirebaseProvider extends DataProvider {
 
   async listLessonsInRange(startISO, endISO) {
     this._requireTutor();
-    const db = this._db;
-    // Student rates for the join.
-    const studentsSnap = await getDocs(collection(db, "students"));
-    const rates = {};
-    studentsSnap.docs.forEach((d) => { rates[d.id] = d.data().rate || 0; });
-
-    const snap = await getDocs(query(
-      collection(db, "lessons"),
-      where("start", ">=", Timestamp.fromDate(new Date(startISO))),
-      where("start", "<", Timestamp.fromDate(new Date(endISO)))
-    ));
-    return snap.docs
-      .map((d) => { const x = d.data(); return {
-        id: d.id, startISO: tsToISO(x.start), endISO: tsToISO(x.end), studentId: x.studentId,
-        studentName: x.studentName, subject: x.subject, paid: x.paid === true,
-        rate: rates[x.studentId] || 0,
-        _status: x.status || "booked",
-      }; })
-      .filter((l) => l._status === "booked")
-      .sort((a, b) => a.startISO.localeCompare(b.startISO));
+    const rows = await this._lessonsWithRates(startISO, endISO);
+    return rows.map(({ _status, ...l }) => l); // strip internal field
   }
 
   async setLessonPaid(id, paid) {
@@ -741,7 +748,7 @@ export class FirebaseProvider extends DataProvider {
     };
   }
 
-  async addStudent({ name, subject, rate }) {
+  async addStudent({ name, subject, rate, rateType }) {
     this._requireTutor();
     const clean = (name || "").trim();
     if (!clean) throw new Error("Student name is required.");
@@ -750,10 +757,228 @@ export class FirebaseProvider extends DataProvider {
       name: clean,
       subject: (subject || "").trim(),
       rate: Number(rate) || 0,
+      rateType: rtype(rateType),
       parentUids: [],
       createdAt: serverTimestamp(),
     });
-    return { id: ref.id, name: clean, rate: Number(rate) || 0 };
+    return { id: ref.id, name: clean, rate: Number(rate) || 0, rateType: rtype(rateType) };
+  }
+
+  // ---- invoices ----
+  async buildMonthlyInvoiceDraft(studentId, monthISO) {
+    this._requireTutor();
+    const db = this._db;
+    const sDoc = await getDoc(doc(db, "students", studentId));
+    if (!sDoc.exists()) throw new Error("Unknown student.");
+    const key = monthKey(monthISO);
+    const { startISO, endISO } = monthBounds(key);
+    const rateType = rtype(sDoc.data().rateType);
+    const rate = Number(sDoc.data().rate) || 0;
+    const settings = await this.getPaymentSettings();
+
+    const rows = (await this._lessonsWithRates(startISO, endISO)).filter((l) => l.studentId === studentId);
+    const lineItems = rows.map((l) => {
+      const dur = durationHours(l.startISO, l.endISO);
+      return {
+        lessonId: l.id, dateISO: l.startISO, startTime: hhmm(l.startISO), endTime: hhmm(l.endISO),
+        durationHours: dur, amount: lineAmount(dur, rate, rateType),
+        paid: l.paid === true, remarks: l.paid ? "Paid" : "", included: true,
+      };
+    });
+    const inv = {
+      id: "", studentId, studentName: sDoc.data().name, invoiceNo: "", periodMonth: key,
+      periodStartISO: startISO, periodEndISO: endISO, invoiceDateISO: null,
+      billFrom: settings.payeeName || "", billToParent: "", billToChild: sDoc.data().name,
+      rateType, rate, lineItems, additionalMaterials: 0, additionalMaterialsLabel: "Additional Materials",
+      payNowId: settings.payNowId || "", status: "draft",
+      createdISO: new Date().toISOString(), issuedISO: null, paidISO: null,
+    };
+    inv.totals = computeTotals(inv);
+    return inv;
+  }
+
+  async saveInvoice(draft) {
+    this._requireTutor();
+    const db = this._db;
+    const sDoc = await getDoc(doc(db, "students", draft.studentId));
+    if (!sDoc.exists()) throw new Error("Unknown student.");
+    const id = draft.id || doc(collection(db, "invoices")).id;
+
+    let existing = null;
+    if (draft.id) {
+      const e = await getDoc(doc(db, "invoices", id));
+      if (e.exists()) existing = e.data();
+    }
+    if (existing && existing.status !== "draft") {
+      throw new Error("This invoice has been issued and can't be edited.");
+    }
+
+    const out = {
+      studentId: draft.studentId,
+      studentName: sDoc.data().name,
+      invoiceNo: (draft.invoiceNo || "").trim(),
+      periodMonth: draft.periodMonth,
+      periodStart: Timestamp.fromDate(new Date(draft.periodStartISO)),
+      periodEnd: Timestamp.fromDate(new Date(draft.periodEndISO)),
+      invoiceDate: draft.invoiceDateISO ? Timestamp.fromDate(new Date(draft.invoiceDateISO)) : null,
+      billFrom: (draft.billFrom || "").trim(),
+      billToParent: (draft.billToParent || "").trim(),
+      billToChild: sDoc.data().name,
+      rateType: rtype(draft.rateType), rate: Number(draft.rate) || 0,
+      lineItems: (draft.lineItems || []).map((l) => ({
+        lessonId: l.lessonId || "", date: Timestamp.fromDate(new Date(l.dateISO)),
+        startTime: l.startTime, endTime: l.endTime,
+        durationHours: Number(l.durationHours) || 0, amount: Number(l.amount) || 0,
+        paid: l.paid === true, remarks: (l.remarks || "").trim(), included: l.included !== false,
+      })),
+      additionalMaterials: Math.max(0, Number(draft.additionalMaterials) || 0),
+      additionalMaterialsLabel: (draft.additionalMaterialsLabel || "Additional Materials").trim(),
+      payNowId: (draft.payNowId || "").trim(),
+      status: existing ? existing.status : "draft",
+      createdAt: existing ? existing.createdAt : serverTimestamp(),
+      issuedAt: existing ? existing.issuedAt || null : null,
+      paidAt: existing ? existing.paidAt || null : null,
+    };
+    // Totals computed from an ISO view so computeTotals (shared) works.
+    out.totals = computeTotals({
+      lineItems: out.lineItems.map((l) => ({ durationHours: l.durationHours, amount: l.amount, included: l.included })),
+      additionalMaterials: out.additionalMaterials,
+    });
+    await setDoc(doc(db, "invoices", id), out);
+    return this._invoiceOut(id, out);
+  }
+
+  async listInvoices() {
+    const v = this._requireViewer();
+    const db = this._db;
+    let docs = [];
+    if (v.role === "tutor") {
+      docs = (await getDocs(collection(db, "invoices"))).docs;
+    } else {
+      const seen = new Map();
+      for (const chunk of chunk15(v.studentIds || [])) {
+        const snap = await getDocs(query(
+          collection(db, "invoices"),
+          where("studentId", "in", chunk),
+          where("status", "in", ["issued", "paid"]) // MUST match the read rule
+        ));
+        snap.docs.forEach((d) => seen.set(d.id, d));
+      }
+      docs = [...seen.values()];
+    }
+    return docs
+      .map((d) => this._invoiceOut(d.id, d.data()))
+      .sort((a, b) => b.periodMonth.localeCompare(a.periodMonth) || (b.createdISO || "").localeCompare(a.createdISO || ""));
+  }
+
+  async getInvoice(id) {
+    const v = this._requireViewer();
+    const snap = await getDoc(doc(this._db, "invoices", id));
+    if (!snap.exists()) return null;
+    const inv = this._invoiceOut(id, snap.data());
+    if (v.role !== "tutor" && !((v.studentIds || []).includes(inv.studentId) && inv.status !== "draft")) return null;
+    return inv;
+  }
+
+  async issueInvoice(id) {
+    this._requireTutor();
+    const db = this._db;
+    const ref = doc(db, "invoices", id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error("Invoice not found.");
+    const cur = snap.data();
+    if (cur.status === "paid") throw new Error("A paid invoice can't be re-issued.");
+    if (cur.status === "issued") return this._invoiceOut(id, cur); // idempotent
+
+    const totals = computeTotals({
+      lineItems: (cur.lineItems || []).map((l) => ({ durationHours: l.durationHours, amount: l.amount, included: l.included })),
+      additionalMaterials: cur.additionalMaterials,
+    });
+    if (!(totals.totalPayable > 0)) throw new Error("Nothing payable — can't issue a $0 invoice.");
+
+    // Invoice number via a transactional counter (unless the tutor typed one).
+    let invoiceNo = (cur.invoiceNo || "").trim();
+    if (!invoiceNo) {
+      const counterId = `${cur.periodMonth}`;
+      invoiceNo = await runTransaction(db, async (tx) => {
+        const cRef = doc(db, "counters", counterId);
+        const cSnap = await tx.get(cRef);
+        const next = (cSnap.exists() ? (cSnap.data().n || 0) : 0) + 1;
+        tx.set(cRef, { n: next }, { merge: true });
+        return invoiceNumber(cur.billFrom, cur.periodMonth, next);
+      });
+    }
+    await updateDoc(ref, {
+      invoiceNo,
+      status: "issued",
+      issuedAt: serverTimestamp(),
+      invoiceDate: cur.invoiceDate || serverTimestamp(),
+      totals,
+    });
+    const after = await getDoc(ref);
+    return this._invoiceOut(id, after.data());
+  }
+
+  async setInvoicePaid(id, paid) {
+    this._requireTutor();
+    const db = this._db;
+    const ref = doc(db, "invoices", id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error("Invoice not found.");
+    const cur = snap.data();
+
+    if (!paid) {
+      await updateDoc(ref, { status: "issued", paidAt: null }); // status only
+      const after = await getDoc(ref);
+      return this._invoiceOut(id, after.data());
+    }
+
+    // Pre-read the distinct lesson ids so a missing one can't abort the batch.
+    const lessonIds = [...new Set((cur.lineItems || []).map((l) => l.lessonId).filter(Boolean))];
+    const existing = new Set();
+    for (const lid of lessonIds) {
+      const l = await getDoc(doc(db, "lessons", lid));
+      if (l.exists()) existing.add(lid);
+    }
+    const newLines = (cur.lineItems || []).map((l) => ({ ...l, paid: true, remarks: l.remarks || "Paid" }));
+
+    // Chunk writes to stay under the batch cap.
+    const ops = [...existing];
+    for (let i = 0; i < ops.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const lid of ops.slice(i, i + 400)) batch.update(doc(db, "lessons", lid), { paid: true });
+      await batch.commit();
+    }
+    await updateDoc(ref, { status: "paid", paidAt: serverTimestamp(), lineItems: newLines });
+    const after = await getDoc(ref);
+    return this._invoiceOut(id, after.data());
+  }
+
+  async deleteInvoice(id) {
+    this._requireTutor();
+    await deleteDoc(doc(this._db, "invoices", id));
+  }
+
+  _invoiceOut(id, x) {
+    return {
+      id,
+      studentId: x.studentId, studentName: x.studentName, invoiceNo: x.invoiceNo || "",
+      periodMonth: x.periodMonth,
+      periodStartISO: tsToISO(x.periodStart), periodEndISO: tsToISO(x.periodEnd),
+      invoiceDateISO: tsToISO(x.invoiceDate),
+      billFrom: x.billFrom || "", billToParent: x.billToParent || "", billToChild: x.billToChild || x.studentName || "",
+      rateType: rtype(x.rateType), rate: Number(x.rate) || 0,
+      lineItems: (x.lineItems || []).map((l) => ({
+        lessonId: l.lessonId || "", dateISO: tsToISO(l.date), startTime: l.startTime, endTime: l.endTime,
+        durationHours: Number(l.durationHours) || 0, amount: Number(l.amount) || 0,
+        paid: l.paid === true, remarks: l.remarks || "", included: l.included !== false,
+      })),
+      additionalMaterials: Number(x.additionalMaterials) || 0,
+      additionalMaterialsLabel: x.additionalMaterialsLabel || "Additional Materials",
+      totals: x.totals || computeTotals({ lineItems: [], additionalMaterials: 0 }),
+      payNowId: x.payNowId || "", status: x.status || "draft",
+      createdISO: tsToISO(x.createdAt), issuedISO: tsToISO(x.issuedAt), paidISO: tsToISO(x.paidAt),
+    };
   }
 
   async removeStudent(studentId) {
@@ -927,6 +1152,13 @@ function strip(l) {
 }
 function* chunk30(arr) {
   for (let i = 0; i < arr.length; i += 30) yield arr.slice(i, i + 30);
+}
+function* chunk15(arr) {
+  // 15 because `studentId in [15]` × `status in [2]` = 30 disjuncts (Firestore cap).
+  for (let i = 0; i < arr.length; i += 15) yield arr.slice(i, i + 15);
+}
+function rtype(t) {
+  return t === "hourly" ? "hourly" : "perLesson";
 }
 function rcode() {
   const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars

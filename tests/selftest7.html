@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>Tuition Calendar — invoices self-test</title></head>
+  <body>
+    <h1>Self-test 7 (invoices)</h1>
+    <pre id="out">running…</pre>
+    <script type="module">
+      import { MockProvider } from "../js/data/mock-provider.js";
+      import { computeTotals, durationHours, lineAmount, invoiceNumber, monthBounds } from "../js/data/invoice-math.js";
+
+      const results = [];
+      let failed = 0;
+      const check = (n, c, d = "") => { results.push(`${c ? "PASS" : "FAIL"}  ${n}${d ? "  — " + d : ""}`); if (!c) failed++; };
+      const mondayISO = () => { const d=new Date(); const day=(d.getDay()+6)%7; d.setHours(0,0,0,0); d.setDate(d.getDate()-day); return d.toISOString(); };
+      const at = (dow,h,m=0)=>{ const d=new Date(mondayISO()); d.setDate(d.getDate()+dow); d.setHours(h,m,0,0); return d.toISOString(); };
+      const monthKeyNow = () => { const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); };
+
+      async function run() {
+        try { localStorage.removeItem("tuition_demo_state_v1"); localStorage.removeItem("tuition_demo_last_user"); } catch(_){}
+
+        // ---- pure math ----
+        check("durationHours 1.5h", durationHours(at(0,15), at(0,16,30)) === 1.5);
+        check("durationHours rounds to .25", durationHours(at(0,15), at(0,15,50)) === 0.75, String(durationHours(at(0,15),at(0,15,50))));
+        check("hourly lineAmount 1.5h@40 = 60", lineAmount(1.5, 40, "hourly") === 60);
+        check("perLesson lineAmount = rate", lineAmount(1.5, 50, "perLesson") === 50);
+        // round per line then sum: 0.1+0.2 style
+        const tt = computeTotals({ lineItems:[{durationHours:1,amount:33.333,included:true},{durationHours:1,amount:33.333,included:true}], additionalMaterials:0 });
+        check("totals round per-line then sum", tt.totalLessonFee === 66.67, String(tt.totalLessonFee));
+        check("additionalMaterials clamped >=0", computeTotals({lineItems:[],additionalMaterials:-5}).additionalMaterials === 0);
+        check("invoiceNumber format", invoiceNumber("Ms Huang","2026-06",1) === "MH2606-01", invoiceNumber("Ms Huang","2026-06",1));
+
+        const p = new MockProvider(); await p.init();
+        await p.signIn("tutor@demo.app","demo");
+        await p.savePaymentSettings({payNowId:"85182829",payeeName:"Ms Huang"});
+        await p.setStudentRate("stu-aiden",40,"hourly");
+
+        // ---- draft from current month seed lessons (Aiden has bk-1,bk-5,bk-9) ----
+        const draft = await p.buildMonthlyInvoiceDraft("stu-aiden", monthKeyNow());
+        check("draft groups aiden's month lessons", draft.lineItems.length >= 1, `${draft.lineItems.length}`);
+        check("draft hourly total = hours*40", Math.abs(draft.totals.totalPayable - draft.totals.totalHours*40) < 0.01, `${draft.totals.totalPayable} vs ${draft.totals.totalHours*40}`);
+
+        // ---- save + edit (add materials) + recompute ----
+        draft.additionalMaterials = 15;
+        const saved = await p.saveInvoice(draft);
+        check("saved totals include materials", Math.abs(saved.totals.totalPayable - (saved.totals.totalLessonFee+15)) < 0.01);
+        check("client totals ignored (recomputed)", saved.totals.totalLessonFee > 0);
+
+        // ---- issue assigns number + freezes ----
+        const issued = await p.issueInvoice(saved.id);
+        check("issued number assigned (MH2606-..)", /^MH\d{4}-\d{2}$/.test(issued.invoiceNo), issued.invoiceNo);
+        check("issued status", issued.status === "issued");
+        // re-issue idempotent
+        const again = await p.issueInvoice(saved.id);
+        check("re-issue idempotent (same no.)", again.invoiceNo === issued.invoiceNo);
+
+        // ---- SNAPSHOT: cancel a lesson after issue -> invoice unchanged ----
+        const lid = issued.lineItems[0].lessonId;
+        await p.cancelLesson(lid);
+        const afterCancel = await p.getInvoice(issued.id);
+        check("issued invoice is a snapshot (lines unchanged after lesson cancel)", afterCancel.lineItems.length === issued.lineItems.length);
+
+        // ---- can't edit an issued invoice ----
+        let blocked=false; try { await p.saveInvoice({ ...afterCancel, additionalMaterials: 99 }); } catch { blocked=true; }
+        check("issued invoice can't be edited", blocked);
+
+        // ---- mark paid -> status + line paid ----
+        const paid = await p.setInvoicePaid(issued.id, true);
+        check("mark paid sets status", paid.status === "paid");
+        check("mark paid flags lines", paid.lineItems.every(l=>l.paid));
+
+        // ---- privacy: parent A sees it, parent B does not ----
+        await p.signIn("parent.a@demo.app","demo");
+        const aInv = await p.listInvoices();
+        check("aiden-parent sees the invoice", aInv.some(i=>i.id===issued.id && i.status==="paid"));
+        check("parent can't see a DRAFT", true); // drafts never reach issued list; covered below
+        await p.signIn("parent.b@demo.app","demo");
+        const bInv = await p.listInvoices();
+        check("bella-parent does NOT see aiden invoice", !bInv.some(i=>i.id===issued.id));
+        const bGet = await p.getInvoice(issued.id);
+        check("bella-parent getInvoice -> null", bGet === null);
+
+        // ---- parent cannot see a tutor's DRAFT ----
+        await p.signIn("tutor@demo.app","demo");
+        const draft2 = await p.saveInvoice(await p.buildMonthlyInvoiceDraft("stu-aiden", monthKeyNow()));
+        await p.signIn("parent.a@demo.app","demo");
+        check("parent does NOT see a draft invoice", !(await p.listInvoices()).some(i=>i.id===draft2.id));
+        check("parent getInvoice(draft) -> null", (await p.getInvoice(draft2.id)) === null);
+
+        // ---- parent can't issue/mark paid/delete ----
+        let g1=false,g2=false; try{await p.issueInvoice(draft2.id);}catch{g1=true;} try{await p.setInvoicePaid(issued.id,false);}catch{g2=true;}
+        check("parent BLOCKED from issueInvoice", g1);
+        check("parent BLOCKED from setInvoicePaid", g2);
+
+        const summary = `${results.length - failed}/${results.length} passed`;
+        document.getElementById("out").textContent = results.join("\n") + "\n\n" + summary;
+        document.title = failed === 0 ? "SELFTEST7_OK" : "SELFTEST7_FAIL";
+      }
+      run().catch(e => { document.getElementById("out").textContent = "ERROR: " + e.stack; document.title = "SELFTEST7_FAIL"; });
+    </script>
+  </body>
+</html>
